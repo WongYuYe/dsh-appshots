@@ -1,0 +1,4 @@
+# bundle patch: insert Appshots into the host composition
+- insert:
+    - id: dsh-appshots
+      name: dsh-appshots
