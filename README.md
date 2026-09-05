@@ -2,6 +2,8 @@
 
 [![Awesome DSH Plugin](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com)
 
+English | [简体中文](README.zh-CN.md)
+
 Codex-style Appshots for [DSH Desktop](https://github.com/anywhere-labs/dsh-desktop) on macOS.
 
 Press both Command keys (or the camera button next to the composer) to capture the frontmost window and attach it to the current chat.
