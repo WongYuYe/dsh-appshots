@@ -4,9 +4,9 @@
 
 [English](README.md) | 简体中文
 
-Codex 风格的 Appshots，用于 macOS 上的 [DSH Desktop](https://github.com/anywhere-labs/dsh-desktop)。
+给 macOS 上 [DSH Desktop](https://github.com/anywhere-labs/dsh-desktop) 用的窗口截图。
 
-同时按下两个 Command 键（或点输入框旁的相机按钮），捕获最前面的窗口并附加到当前会话。
+同时按两边 Command（或点输入框旁的相机），捕获当前前台窗口，附加到会话草稿，并读取窗口文字作为隐藏上下文。
 
 - 只捕获最前面的窗口，不截整个屏幕
 - 截图附加到输入框草稿，不会自动发送

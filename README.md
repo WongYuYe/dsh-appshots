@@ -4,9 +4,9 @@
 
 English | [简体中文](README.zh-CN.md)
 
-Codex-style Appshots for [DSH Desktop](https://github.com/anywhere-labs/dsh-desktop) on macOS.
+Codex-style window capture for [DSH Desktop](https://github.com/anywhere-labs/dsh-desktop) on macOS.
 
-Press both Command keys (or the camera button next to the composer) to capture the frontmost window and attach it to the current chat.
+Press both Command keys (or the camera button next to the composer) to grab the frontmost window, attach it to the current chat, and inject available window text as hidden context.
 
 - Captures the frontmost window only, not the whole screen
 - Attaches the screenshot to the composer draft without sending it
