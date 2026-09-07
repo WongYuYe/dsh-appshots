@@ -1,6 +1,6 @@
 {
   "name": "dsh-appshots",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Codex-style window capture for DSH Desktop: press both Command keys (or the camera button) to grab the frontmost macOS window, attach it to the current chat, and inject available window text as hidden context.",
   "type": "module",
   "main": "lib/index.js",
@@ -16,6 +16,7 @@
     "native",
     "cordis.patch.yml",
     "README.md",
+    "README.zh-CN.md",
     "LICENSE"
   ],
   "license": "MIT",
