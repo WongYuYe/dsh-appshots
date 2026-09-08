@@ -32,6 +32,8 @@ dsh plugin --profile desktop add .
 
 On Windows the helper compiles on first capture with the system `csc.exe` (.NET Framework 4.x). Visual Studio is not required.
 
+Release: bump `package.json` to `X.Y.Z` and push a `vX.Y.Z` tag. GitHub Actions opens the GitHub Release and publishes to npm with Trusted Publisher (OIDC).
+
 ## Permissions
 
 ### macOS

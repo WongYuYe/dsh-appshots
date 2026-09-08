@@ -1,0 +1,37 @@
+# A pushed version tag IS the release: pack tarballs, open the GitHub
+# Release, then publish to npm via OIDC (Trusted Publisher).
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - run: test "v$(node -p "require('./package.json').version")" = "$GITHUB_REF_NAME"
+      - name: Pack tarball
+        run: |
+          mkdir -p dist
+          npm pack --pack-destination dist
+          TARBALL="$(node -e 'const fs=require("fs");const vs=fs.readdirSync("dist").filter(f=>/^dsh-appshots-[0-9]+\.[0-9]+\.[0-9]+(?:-[^\.]+(?:\.[^\.]+)*)?\.tgz$/.test(f));if(vs.length!==1){console.error("expected exactly one versioned tarball, got "+vs.length+": "+vs.join(","));process.exit(1)}console.log("dist/"+vs[0])')"
+          if [ -z "$TARBALL" ]; then echo "versioned tarball not found"; exit 1; fi
+          cp "$TARBALL" dist/dsh-appshots.tgz
+          echo "TARBALL=$TARBALL" >> "$GITHUB_ENV"
+          echo "FIXED_TARBALL=dist/dsh-appshots.tgz" >> "$GITHUB_ENV"
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes --title "$GITHUB_REF_NAME" "$TARBALL" "$FIXED_TARBALL"
+      - run: npm publish --access public --provenance
