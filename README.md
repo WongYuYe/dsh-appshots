@@ -14,10 +14,6 @@ macOS 同时按两边 Command，Windows 同时按两边 Ctrl，或点输入框�
 - 跳过 DSH Desktop 自身，避免截到插件自己的窗口
 - 截图后自动把 DSH Desktop 调到前台
 
-<p align="center">
-  <img src="docs/demo.gif" alt="捕获前台窗口并附加到会话" width="720">
-</p>
-
 ## 安装
 
 ```sh

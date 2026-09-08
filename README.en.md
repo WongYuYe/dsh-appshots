@@ -14,10 +14,6 @@ Press both Command keys on macOS, both Ctrl keys on Windows, or the camera butto
 - Skips DSH Desktop itself so the plugin does not capture its own window
 - After capture, brings DSH Desktop to the front
 
-<p align="center">
-  <img src="docs/demo.gif" alt="Capture the frontmost window and attach it to the chat" width="720">
-</p>
-
 ## Install
 
 ```sh
