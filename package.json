@@ -16,7 +16,7 @@
     "native",
     "cordis.patch.yml",
     "README.md",
-    "README.zh-CN.md",
+    "README.en.md",
     "LICENSE"
   ],
   "license": "MIT",

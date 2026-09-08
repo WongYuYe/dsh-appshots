@@ -2,27 +2,27 @@
 
 [![Awesome DSH Plugin](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com)
 
-English | [简体中文](README.zh-CN.md)
+简体中文 | [English](README.en.md)
 
-Codex-style window capture for [DSH Desktop](https://github.com/anywhere-labs/dsh-desktop) on macOS and Windows.
+给 [DSH Desktop](https://github.com/anywhere-labs/dsh-desktop) 用的窗口截图，支持 macOS 和 Windows。
 
-Press both Command keys on macOS, both Ctrl keys on Windows, or the camera button next to the composer to grab the frontmost window, attach it to the current chat, and inject available window text as hidden context.
+macOS 同时按两边 Command，Windows 同时按两边 Ctrl，或点输入框旁的相机，捕获当前前台窗口，附加到会话草稿，并读取窗口文字作为隐藏上下文。
 
-- Captures the frontmost window only, not the whole screen
-- Attaches the screenshot to the composer draft without sending it
-- Reads available window text (Accessibility on macOS, UI Automation on Windows) and injects it as hidden model context
-- Skips DSH Desktop itself so the plugin does not capture its own window
-- After capture, brings DSH Desktop to the front
+- 只捕获最前面的窗口，不截整个屏幕
+- 截图附加到输入框草稿，不会自动发送
+- 读取可用的窗口文字（macOS 辅助功能 / Windows UI Automation），作为隐藏的模型上下文注入
+- 跳过 DSH Desktop 自身，避免截到插件自己的窗口
+- 截图后自动把 DSH Desktop 调到前台
 
-## Install
+## 安装
 
 ```sh
 dsh plugin --profile desktop add dsh-appshots
 ```
 
-Restart DSH Desktop after installing.
+安装后重启 DSH Desktop。
 
-From source:
+从源码安装：
 
 ```sh
 git clone https://github.com/WongYuYe/dsh-appshots.git
@@ -30,57 +30,57 @@ cd dsh-appshots
 dsh plugin --profile desktop add .
 ```
 
-On Windows the helper compiles on first capture with the system `csc.exe` (.NET Framework 4.x). Visual Studio is not required.
+Windows 会在第一次截图时用系统自带的 `csc.exe`（.NET Framework 4.x）编译助手，不需要安装 Visual Studio。
 
-## Permissions
+## 权限
 
 ### macOS
 
-System Settings → Privacy & Security:
+系统设置 → 隐私与安全性：
 
-- **Screen Recording**: required to capture the frontmost window
-- **Accessibility**: required to listen for both Command keys and read window text
+- **屏幕录制**：捕获最前面窗口所必需
+- **辅助功能**：监听两个 Command 键、读取窗口文字所必需
 
-Grant these to **DSH Desktop**. If the hotkey does not fire, also allow `appshot-capture`.
+把这两项授予 **DSH Desktop**。如果热键不触发，同时允许 `appshot-capture`。
 
 ### Windows
 
-- Screen capture uses `CopyFromScreen`; Windows may prompt once for screen access
-- Window text uses UI Automation; some elevated or protected apps expose little or no text
-- The default hotkey is both Ctrl keys. If it does not fire, try `hotkeyMode: win-hotkey`
+- 截图走 `CopyFromScreen`，系统可能弹一次屏幕访问授权
+- 窗口文字走 UI Automation，部分提权或受保护的应用几乎读不到文字
+- 默认热键是同时按两边 Ctrl。如果不触发，可改成 `hotkeyMode: win-hotkey`
 
-## Use
+## 使用
 
-1. Focus the window you want to share.
-2. Press both Command keys (macOS) or both Ctrl keys (Windows), or click the camera button in the composer.
-3. DSH Desktop comes to the front with the screenshot attached.
-4. Add a prompt and send.
+1. 聚焦你想分享的窗口。
+2. macOS 同时按两个 Command，Windows 同时按两个 Ctrl，或点击输入框里的相机按钮。
+3. DSH Desktop 来到前台，截图已附加。
+4. 输入提示词并发送。
 
-If a session is currently open, the appshot goes there. If none is open, a new session is created. Consecutive captures go to the same session.
+如果当前有打开的会话，Appshot 会附加到那里；如果没有，会新建一个会话。连续截图会进入同一个会话。
 
-## Settings
+## 设置
 
-Namespace `dsh-appshots` in `~/.dsh/settings.yaml`:
+命名空间 `dsh-appshots`，位于 `~/.dsh/settings.yaml`：
 
-| Field | Default | Meaning |
+| 字段 | 默认值 | 含义 |
 |---|---|---|
-| `skipSelf` | `true` | Skip DSH Desktop itself |
-| `attachText` | `true` | Inject cleaned window text as hidden model context on send |
-| `recentWindowMs` | `60000` | If no session is open, reuse the session captured within this window |
+| `skipSelf` | `true` | 跳过 DSH Desktop 自身 |
+| `attachText` | `true` | 发送时把清洗后的窗口文字作为隐藏模型上下文注入 |
+| `recentWindowMs` | `60000` | 没有打开会话时，复用这个时间窗口内截图过的会话 |
 | `hotkeyMode` | `auto` | `auto` / `both-command` / `both-control` / `carbon` / `win-hotkey` / `off` |
-| `carbonKeyCode` | `0` | Carbon key code when `hotkeyMode` is `carbon` |
-| `carbonModifiers` | `256` | Carbon modifiers; 256 is Command |
-| `winVk` | `44` | Virtual-key code when `hotkeyMode` is `win-hotkey` (44 is PrintScreen) |
-| `winModifiers` | `3` | Win32 modifiers for `win-hotkey`; 3 is Ctrl+Alt |
+| `carbonKeyCode` | `0` | `hotkeyMode` 为 `carbon` 时的 Carbon 键码 |
+| `carbonModifiers` | `256` | Carbon 修饰键；256 是 Command |
+| `winVk` | `44` | `hotkeyMode` 为 `win-hotkey` 时的虚拟键码（44 是 PrintScreen） |
+| `winModifiers` | `3` | `win-hotkey` 的 Win32 修饰键；3 是 Ctrl+Alt |
 
-`auto` is both Command keys on macOS and both Ctrl keys on Windows.
+`auto` 在 macOS 上是两边 Command，在 Windows 上是两边 Ctrl。
 
-## Limits
+## 限制
 
-- macOS and Windows only
-- Window text comes from the platform accessibility tree, so some apps expose only visible copy
-- Chrome chrome such as the tab strip and bookmark bar is filtered out of the hidden text
-- Windows capture copies the on-screen pixels of the window rectangle; occluded windows include whatever is visible
+- 仅支持 macOS 和 Windows
+- 窗口文字来自系统辅助功能树，部分应用只暴露可见文本
+- Chrome 的标签栏、书签栏等 UI 会从隐藏文本中过滤掉
+- Windows 截的是窗口矩形的屏幕像素，被挡住的窗口会带上挡住它的内容
 
 ## License
 
