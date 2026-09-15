@@ -399,95 +399,88 @@ internal static class Program
         "Images", "Videos", "Shopping", "News", "More", "Tools", "Help", "Privacy", "Terms",
     };
 
+    sealed class RankedLine
+    {
+        public int Rank;
+        public string Text;
+        public RankedLine(int rank, string text)
+        {
+            Rank = rank;
+            Text = text;
+        }
+    }
+
     static void WindowText(IntPtr hwnd, int maxChars, out string text, out bool truncated)
     {
-        List<string> lines = new List<string>();
-        HashSet<string> seen = new HashSet<string>(StringComparer.Ordinal);
-        DateTime deadline = DateTime.UtcNow.AddMilliseconds(1200);
-        int budget = 900;
+        List<RankedLine> rows = new List<RankedLine>();
+        DateTime deadline = DateTime.UtcNow.AddMilliseconds(1800);
+        int budget = 2200;
+        string owner, title;
+        uint pid;
+        Describe(hwnd, out owner, out title, out pid);
+        double wl = 0, wt = 0, wr = 0, wb = 0;
+        bool hasWindowRect = false;
         try
         {
             AutomationElement root = AutomationElement.FromHandle(hwnd);
-            if (root != null) CollectText(root, deadline, ref budget, 0, lines, seen);
-        }
-        catch
-        {
-        }
-        if (lines.Count == 0)
-        {
-            string title = WindowTitle(hwnd);
-            if (!string.IsNullOrWhiteSpace(title)) lines.Add(title.Trim());
-        }
-        StringBuilder joined = new StringBuilder();
-        foreach (string line in lines)
-        {
-            if (joined.Length > 0) joined.Append('\n');
-            joined.Append(line);
-            if (joined.Length >= maxChars) break;
-        }
-        text = joined.ToString();
-        truncated = text.Length > maxChars;
-        if (truncated) text = text.Substring(0, maxChars);
-    }
-
-    static void CollectText(AutomationElement element, DateTime deadline, ref int budget, int depth, List<string> lines, HashSet<string> seen)
-    {
-        if (DateTime.UtcNow > deadline || budget <= 0 || depth > 18 || element == null) return;
-        budget -= 1;
-        try
-        {
-            ControlType type = null;
-            try { type = element.Current.ControlType; } catch { }
-            if (type == ControlType.ToolBar || type == ControlType.MenuBar || type == ControlType.Menu || type == ControlType.Separator || type == ControlType.SplitButton)
+            if (root != null)
             {
-                return;
-            }
-            string value = null;
-            try
-            {
-                object pattern;
-                if (element.TryGetCurrentPattern(ValuePattern.Pattern, out pattern))
+                try
                 {
-                    value = ((ValuePattern)pattern).Current.Value;
+                    System.Windows.Rect bounds = root.Current.BoundingRectangle;
+                    if (!bounds.IsEmpty)
+                    {
+                        wl = bounds.Left; wt = bounds.Top; wr = bounds.Right; wb = bounds.Bottom;
+                        hasWindowRect = true;
+                    }
                 }
-                else if (element.TryGetCurrentPattern(TextPattern.Pattern, out pattern))
-                {
-                    value = ((TextPattern)pattern).DocumentRange.GetText(400);
-                }
-            }
-            catch { }
-            if (string.IsNullOrWhiteSpace(value))
-            {
-                try { value = element.Current.Name; } catch { }
-            }
-            AddLine(value, lines, seen);
-            AutomationElement child = TreeWalker.ControlViewWalker.GetFirstChild(element);
-            int count = 0;
-            while (child != null && count < 80)
-            {
-                CollectText(child, deadline, ref budget, depth + 1, lines, seen);
-                child = TreeWalker.ControlViewWalker.GetNextSibling(child);
-                count++;
+                catch { }
+                CollectText(root, wl, wt, wr, wb, hasWindowRect, IsBrowserOwner(owner), deadline, ref budget, 0, rows);
             }
         }
         catch
         {
         }
+        string cleaned = CleanWindowText(rows, title, owner);
+        if (string.IsNullOrWhiteSpace(cleaned) && !string.IsNullOrWhiteSpace(title)) cleaned = title.Trim();
+        truncated = cleaned.Length > maxChars;
+        text = truncated ? cleaned.Substring(0, maxChars) : cleaned;
     }
 
-    static void AddLine(string value, List<string> lines, HashSet<string> seen)
+    static bool IsBrowserOwner(string owner)
     {
-        if (string.IsNullOrWhiteSpace(value)) return;
-        string[] parts = Regex.Split(value, @"\r\n|\n|\r");
-        foreach (string raw in parts)
+        return owner == "Google Chrome" || owner == "Microsoft Edge" || owner == "Chromium"
+            || owner == "Brave" || owner == "Vivaldi" || owner == "Arc";
+    }
+
+    static bool IsPrivateUse(char ch)
+    {
+        int value = ch;
+        return (value >= 0xE000 && value <= 0xF8FF);
+    }
+
+    static bool IsIconHeavy(string line)
+    {
+        if (line.Length <= 2)
         {
-            string line = raw.Trim();
-            if (line.Length < 2) continue;
-            if (ShouldSkipChromeNoise(line)) continue;
-            if (!seen.Add(line)) continue;
-            lines.Add(line);
-            if (lines.Count >= 400) return;
+            bool allIcons = true;
+            foreach (char ch in line)
+            {
+                if (!char.IsSurrogate(ch) && !IsPrivateUse(ch)) { allIcons = false; break; }
+            }
+            if (allIcons) return true;
         }
+        int icons = 0;
+        foreach (char ch in line) if (IsPrivateUse(ch)) icons++;
+        return icons * 2 >= line.Length;
+    }
+
+    static bool IsLowValue(string line)
+    {
+        string folded = line.Trim().ToLowerInvariant();
+        if (folded == "on" || folded == "off" || folded == "true" || folded == "false" || folded == "yes" || folded == "no") return true;
+        if (folded == "0" || folded == "1") return true;
+        return false;
     }
 
     static bool ShouldSkipChromeNoise(string line)
@@ -497,6 +490,190 @@ internal static class Program
         if (line.Contains("内存用量")) return true;
         if (line.Contains("闲置标签页")) return true;
         return false;
+    }
+
+    static bool IsStaleFindWidget(string line)
+    {
+        return Regex.IsMatch(line, @"\d+\s+of\s+\d+\s+found") || line.Contains(" found for '");
+    }
+
+    static bool IsJunkLine(string line)
+    {
+        if (ShouldSkipChromeNoise(line)) return true;
+        if (IsStaleFindWidget(line)) return true;
+        if (IsIconHeavy(line)) return true;
+        if (line.Contains("command:")) return true;
+        if (line.Contains("gitlens.")) return true;
+        if (line.Contains("$(")) return true;
+        if (line.Contains("utm_source=")) return true;
+        if (line.ToLowerInvariant().Contains("screen reader")) return true;
+        if (line.Contains("YesNoLearn More") || line == "Learn More") return true;
+        if (line.StartsWith("Open in Agents", StringComparison.Ordinal)) return true;
+        if (line.Length > 280) return true;
+        return false;
+    }
+
+    static bool IntersectsWindow(double wl, double wt, double wr, double wb, bool hasWindowRect, System.Windows.Rect frame)
+    {
+        if (!hasWindowRect || frame.IsEmpty) return true;
+        double l = Math.Max(wl, frame.Left);
+        double t = Math.Max(wt, frame.Top);
+        double r = Math.Min(wr, frame.Right);
+        double b = Math.Min(wb, frame.Bottom);
+        return (r - l) >= 2 && (b - t) >= 2;
+    }
+
+    static List<AutomationElement> ChildrenOf(AutomationElement element)
+    {
+        List<AutomationElement> children = new List<AutomationElement>();
+        try
+        {
+            AutomationElement child = TreeWalker.ControlViewWalker.GetFirstChild(element);
+            int count = 0;
+            while (child != null && count < 80)
+            {
+                children.Add(child);
+                child = TreeWalker.ControlViewWalker.GetNextSibling(child);
+                count++;
+            }
+        }
+        catch { }
+        return children;
+    }
+
+    static bool ExtractNode(AutomationElement element, double wl, double wt, double wr, double wb, bool hasWindowRect, bool browserChrome, int depth, List<RankedLine> rows)
+    {
+        try
+        {
+            ControlType type = null;
+            try { type = element.Current.ControlType; } catch { }
+            if (type == ControlType.MenuBar || type == ControlType.Menu || type == ControlType.MenuItem || type == ControlType.Separator || type == ControlType.Image)
+            {
+                return false;
+            }
+            if (browserChrome && (type == ControlType.Tab || type == ControlType.ToolBar)) return false;
+            bool visible = true;
+            try
+            {
+                if (element.Current.IsOffscreen) visible = false;
+                else
+                {
+                    System.Windows.Rect frame = element.Current.BoundingRectangle;
+                    if (frame.Width >= 4 && frame.Height >= 4 && !IntersectsWindow(wl, wt, wr, wb, hasWindowRect, frame)) visible = false;
+                }
+            }
+            catch { }
+            if (!visible) return true;
+
+            try
+            {
+                object textPattern;
+                if (element.TryGetCurrentPattern(TextPattern.Pattern, out textPattern))
+                {
+                    TextPatternRange[] selected = ((TextPattern)textPattern).GetSelection();
+                    if (selected != null && selected.Length > 0)
+                    {
+                        string selectedText = selected[0].GetText(800);
+                        if (!string.IsNullOrWhiteSpace(selectedText) && selectedText.Trim().Length >= 2 && !IsJunkLine(selectedText.Trim()))
+                        {
+                            rows.Add(new RankedLine(0, "Selected: " + selectedText.Trim()));
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            string value = null;
+            try
+            {
+                object pattern;
+                if (element.TryGetCurrentPattern(ValuePattern.Pattern, out pattern))
+                {
+                    value = ((ValuePattern)pattern).Current.Value;
+                }
+                else if (!browserChrome && element.TryGetCurrentPattern(TextPattern.Pattern, out pattern))
+                {
+                    value = ((TextPattern)pattern).DocumentRange.GetText(4000);
+                }
+            }
+            catch { }
+
+            bool editable = type == ControlType.Edit || type == ControlType.ComboBox || type == ControlType.Document;
+            if (!string.IsNullOrWhiteSpace(value) && !IsLowValue(value.Trim()) && !IsJunkLine(value.Trim()))
+            {
+                if (editable || value.Trim().Length >= 6) rows.Add(new RankedLine(editable ? 1 : 2, value.Trim()));
+            }
+            string name = null;
+            try { name = element.Current.Name; } catch { }
+            if (!string.IsNullOrWhiteSpace(name) && name.Trim().Length >= 4 && !IsJunkLine(name.Trim()))
+            {
+                bool buttonLike = type == ControlType.Button || type == ControlType.SplitButton || type == ControlType.CheckBox || type == ControlType.RadioButton;
+                if (!buttonLike || name.Trim().Contains(" ") || name.Trim().Length >= 10)
+                {
+                    rows.Add(new RankedLine(buttonLike ? 4 : 3, name.Trim()));
+                }
+            }
+            return true;
+        }
+        catch
+        {
+            return true;
+        }
+    }
+
+    static void CollectText(AutomationElement element, double wl, double wt, double wr, double wb, bool hasWindowRect, bool browserChrome, DateTime deadline, ref int budget, int depth, List<RankedLine> rows)
+    {
+        if (DateTime.UtcNow > deadline || budget <= 0 || element == null) return;
+        budget -= 1;
+        if (!ExtractNode(element, wl, wt, wr, wb, hasWindowRect, browserChrome, depth, rows)) return;
+        Queue<KeyValuePair<AutomationElement, int>> queue = new Queue<KeyValuePair<AutomationElement, int>>();
+        foreach (AutomationElement child in ChildrenOf(element))
+        {
+            queue.Enqueue(new KeyValuePair<AutomationElement, int>(child, depth + 1));
+        }
+        while (queue.Count > 0 && budget > 0 && DateTime.UtcNow <= deadline)
+        {
+            KeyValuePair<AutomationElement, int> current = queue.Dequeue();
+            if (current.Value > 24) continue;
+            budget -= 1;
+            if (!ExtractNode(current.Key, wl, wt, wr, wb, hasWindowRect, browserChrome, current.Value, rows)) continue;
+            ControlType currentType = null;
+            try { currentType = current.Key.Current.ControlType; } catch { }
+            if (currentType == ControlType.Button || currentType == ControlType.SplitButton
+                || currentType == ControlType.CheckBox || currentType == ControlType.RadioButton)
+            {
+                continue;
+            }
+            foreach (AutomationElement child in ChildrenOf(current.Key))
+            {
+                queue.Enqueue(new KeyValuePair<AutomationElement, int>(child, current.Value + 1));
+            }
+        }
+    }
+
+    static string CleanWindowText(List<RankedLine> rows, string windowName, string owner)
+    {
+        HashSet<string> skipExact = new HashSet<string>(StringComparer.Ordinal);
+        if (!string.IsNullOrWhiteSpace(windowName)) skipExact.Add(windowName.Trim());
+        if (!string.IsNullOrWhiteSpace(owner)) skipExact.Add(owner.Trim());
+        HashSet<string> seen = new HashSet<string>(StringComparer.Ordinal);
+        List<string> kept = new List<string>();
+        rows.Sort(delegate(RankedLine a, RankedLine b) { return a.Rank.CompareTo(b.Rank); });
+        foreach (RankedLine row in rows)
+        {
+            string[] parts = Regex.Split(row.Text ?? "", @"\r\n|\n|\r");
+            foreach (string raw in parts)
+            {
+                string line = raw.Trim();
+                if (line.Length < 2) continue;
+                if (skipExact.Contains(line)) continue;
+                if (IsJunkLine(line)) continue;
+                if (!seen.Add(line)) continue;
+                kept.Add(line);
+                if (kept.Count >= 180) return string.Join("\n", kept.ToArray());
+            }
+        }
+        return string.Join("\n", kept.ToArray());
     }
 
     static void ActivateDshDesktop()

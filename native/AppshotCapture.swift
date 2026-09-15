@@ -110,8 +110,74 @@ let chromeChromeNoise: Set<String> = [
   "Footer Links", "Help", "Send feedback", "Privacy", "Terms",
 ]
 
+let skipRoles: Set<String> = [
+  "AXMenuBar", "AXMenu", "AXMenuItem", "AXHelpTag", "AXImage",
+]
+
+let editableRoles: Set<String> = [
+  "AXTextField", "AXTextArea", "AXComboBox", "AXSearchField", "AXStaticText",
+]
+
 func roleOf(_ element: AXUIElement) -> String {
   stringAttribute(element, kAXRoleAttribute as CFString) ?? ""
+}
+
+func boolAttribute(_ element: AXUIElement, _ name: CFString) -> Bool {
+  var value: CFTypeRef?
+  guard AXUIElementCopyAttributeValue(element, name, &value) == .success else { return false }
+  if let flag = value as? Bool { return flag }
+  if let number = value as? NSNumber { return number.boolValue }
+  return false
+}
+
+func axPoint(_ element: AXUIElement) -> CGPoint? {
+  var ref: CFTypeRef?
+  guard AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &ref) == .success,
+        let raw = ref, CFGetTypeID(raw) == AXValueGetTypeID()
+  else { return nil }
+  var point = CGPoint.zero
+  guard AXValueGetValue(raw as! AXValue, .cgPoint, &point) else { return nil }
+  return point
+}
+
+func axSize(_ element: AXUIElement) -> CGSize? {
+  var ref: CFTypeRef?
+  guard AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &ref) == .success,
+        let raw = ref, CFGetTypeID(raw) == AXValueGetTypeID()
+  else { return nil }
+  var size = CGSize.zero
+  guard AXValueGetValue(raw as! AXValue, .cgSize, &size) else { return nil }
+  return size
+}
+
+func elementFrame(_ element: AXUIElement) -> CGRect? {
+  guard let origin = axPoint(element), let size = axSize(element), size.width >= 1, size.height >= 1 else { return nil }
+  return CGRect(origin: origin, size: size)
+}
+
+func isBrowserOwner(_ owner: String) -> Bool {
+  ["Google Chrome", "Chromium", "Microsoft Edge", "Arc", "Brave Browser", "Vivaldi"].contains(owner)
+}
+
+func isPrivateUse(_ scalar: Unicode.Scalar) -> Bool {
+  (0xE000...0xF8FF).contains(scalar.value)
+    || (0xF0000...0xFFFFD).contains(scalar.value)
+    || (0x100000...0x10FFFD).contains(scalar.value)
+}
+
+func isIconHeavy(_ line: String) -> Bool {
+  let scalars = Array(line.unicodeScalars)
+  guard !scalars.isEmpty else { return true }
+  if scalars.count <= 2, scalars.allSatisfy({ $0.properties.isEmoji || isPrivateUse($0) }) { return true }
+  let icons = scalars.filter { isPrivateUse($0) || $0.properties.isEmoji }.count
+  return icons * 2 >= scalars.count
+}
+
+func isLowValue(_ line: String) -> Bool {
+  let folded = line.lowercased()
+  if ["on", "off", "true", "false", "yes", "no", "0", "1"].contains(folded) { return true }
+  if line.count <= 3, line.allSatisfy({ $0.isNumber || $0 == "." }) { return true }
+  return false
 }
 
 func shouldSkipChromeNoise(_ line: String) -> Bool {
@@ -123,57 +189,371 @@ func shouldSkipChromeNoise(_ line: String) -> Bool {
   return false
 }
 
-func collectText(from element: AXUIElement, deadline: Date, budget: inout Int, depth: Int, into lines: inout [String]) {
-  if Date() > deadline || budget <= 0 || depth > 18 { return }
-  budget -= 1
-  let role = roleOf(element)
-  if ["AXToolbar", "AXTabGroup", "AXMenuBar", "AXMenu", "AXSplitter"].contains(role) { return }
+func isStaleFindWidget(_ line: String) -> Bool {
+  line.range(of: #"\d+\s+of\s+\d+\s+found"#, options: .regularExpression) != nil
+    || line.contains(" found for '")
+    || line.hasPrefix("found for '")
+}
 
-  if let value = stringAttribute(element, kAXValueAttribute as CFString), !shouldSkipChromeNoise(value) {
-    if lines.last != value { lines.append(value) }
-  } else if let title = stringAttribute(element, kAXTitleAttribute as CFString), !shouldSkipChromeNoise(title) {
-    if title.count >= 2, lines.last != title { lines.append(title) }
+func isJunkLine(_ line: String) -> Bool {
+  if shouldSkipChromeNoise(line) { return true }
+  if isStaleFindWidget(line) { return true }
+  if isIconHeavy(line) { return true }
+  if line.contains("command:") { return true }
+  if line.contains("gitlens.") { return true }
+  if line.contains("$(") { return true }
+  if line.contains("utm_source=") { return true }
+  if line.lowercased().contains("screen reader") { return true }
+  if line.contains("YesNoLearn More") || line == "Learn More" { return true }
+  if line.hasPrefix("Open in Agents") { return true }
+  if line.count > 280 { return true }
+  return false
+}
+
+func axElementList(_ element: AXUIElement, _ name: CFString) -> [AXUIElement] {
+  var ref: CFTypeRef?
+  guard AXUIElementCopyAttributeValue(element, name, &ref) == .success, let ref else { return [] }
+  if let list = ref as? [AXUIElement] { return list }
+  if CFGetTypeID(ref) == AXUIElementGetTypeID() { return [ref as! AXUIElement] }
+  return []
+}
+
+func uniqueChildren(_ element: AXUIElement, _ names: [CFString]) -> [AXUIElement] {
+  var seen = Set<ObjectIdentifier>()
+  var out: [AXUIElement] = []
+  for name in names {
+    for child in axElementList(element, name) {
+      let key = ObjectIdentifier(child)
+      if seen.insert(key).inserted { out.append(child) }
+    }
   }
+  return out
+}
 
-  var childrenRef: CFTypeRef?
-  guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenRef) == .success,
-        let children = childrenRef as? [AXUIElement]
-  else { return }
-  for child in children.prefix(80) {
-    collectText(from: child, deadline: deadline, budget: &budget, depth: depth + 1, into: &lines)
+func structuralChildren(_ element: AXUIElement) -> [AXUIElement] {
+  uniqueChildren(element, [kAXChildrenAttribute as CFString, kAXVisibleChildrenAttribute as CFString])
+}
+
+func contentChildren(_ element: AXUIElement) -> [AXUIElement] {
+  let mixed = uniqueChildren(element, [
+    kAXContentsAttribute as CFString,
+    kAXVisibleChildrenAttribute as CFString,
+    kAXChildrenAttribute as CFString,
+  ])
+  return mixed.isEmpty ? structuralChildren(element) : mixed
+}
+
+enum Visibility {
+  case onScreen
+  case unknown
+  case offScreen
+}
+
+func visibility(of element: AXUIElement, windowFrame: CGRect?) -> Visibility {
+  guard let windowFrame else { return .onScreen }
+  guard let frame = elementFrame(element) else { return .unknown }
+  if frame.width < 4 || frame.height < 4 { return .unknown }
+  let visible = windowFrame.intersection(frame)
+  if visible.isNull || visible.width < 2 || visible.height < 2 { return .offScreen }
+  return .onScreen
+}
+
+func isChromeTitle(_ line: String) -> Bool {
+  let folded = line.lowercased()
+  if folded.hasSuffix(" actions") || folded.hasSuffix(" action") { return true }
+  if line.hasSuffix("...") { return true }
+  if folded.contains("view switcher") { return true }
+  if folded.hasPrefix("toggle ") { return true }
+  if folded.contains("gitlens") || folded.contains("gitpod") || folded.contains("copilot") { return true }
+  if folded.contains("synchronize") || folded.contains("search editor") { return true }
+  if folded.contains("submit search") || folded.contains("view as tree") { return true }
+  if ["update", "refresh", "manage", "accounts", "remote", "notifications", "containers",
+      "python", "ports", "node", "maximize panel", "kill terminal", "open quick access",
+      "agent status", "check-all prettier", "collapse all", "clear search results",
+      "open settings", "debug console"].contains(folded) { return true }
+  return false
+}
+
+func hasShortcutChrome(_ line: String) -> Bool {
+  line.contains("⌘") || line.contains("⇧") || line.contains("⌃") || line.contains("⌥")
+    || line.contains("Ctrl+") || line.contains("Cmd+") || line.contains("Shift+")
+}
+
+func stripShortcutChrome(_ line: String) -> String {
+  let pattern = #"(⌘|⇧|⌃|⌥|Ctrl\+|Cmd\+|Shift\+|Alt\+)+[A-Za-z0-9]?"#
+  return line.replacingOccurrences(of: pattern, with: "\n", options: .regularExpression)
+}
+
+func parameterizedAttribute(_ element: AXUIElement, _ name: String, _ argument: CFTypeRef) -> CFTypeRef? {
+  var ref: CFTypeRef?
+  guard AXUIElementCopyParameterizedAttributeValue(element, name as CFString, argument, &ref) == .success else { return nil }
+  return ref
+}
+
+func markerString(_ element: AXUIElement) -> String? {
+  var startRef: CFTypeRef?
+  var endRef: CFTypeRef?
+  guard AXUIElementCopyAttributeValue(element, "AXStartTextMarker" as CFString, &startRef) == .success,
+        AXUIElementCopyAttributeValue(element, "AXEndTextMarker" as CFString, &endRef) == .success,
+        let startRef, let endRef,
+        CFGetTypeID(startRef) == AXTextMarkerGetTypeID(),
+        CFGetTypeID(endRef) == AXTextMarkerGetTypeID()
+  else { return nil }
+  let range = AXTextMarkerRangeCreate(kCFAllocatorDefault, startRef as! AXTextMarker, endRef as! AXTextMarker)
+  guard let text = parameterizedAttribute(element, "AXStringForTextMarkerRange", range) as? String else { return nil }
+  let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+  return trimmed.isEmpty ? nil : trimmed
+}
+
+func splitMarkerBody(_ text: String) -> [String] {
+  var current = ""
+  var parts: [String] = []
+  func flush() {
+    let piece = current.trimmingCharacters(in: .whitespacesAndNewlines)
+    current = ""
+    guard piece.count >= 2 else { return }
+    for raw in stripShortcutChrome(piece).split(whereSeparator: \.isNewline) {
+      let line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+      if line.count >= 2 { parts.append(line) }
+    }
+  }
+  for scalar in text.unicodeScalars {
+    if scalar == "\u{FFFC}" || isPrivateUse(scalar) || scalar.properties.isEmoji {
+      flush()
+      continue
+    }
+    if scalar == "\n" || scalar == "\r" {
+      flush()
+      continue
+    }
+    current.unicodeScalars.append(scalar)
+  }
+  flush()
+  return parts
+}
+
+func appendText(_ text: String, rank: Int, into lines: inout [(rank: Int, text: String)]) {
+  let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+  guard trimmed.count >= 2, !isLowValue(trimmed), !isJunkLine(trimmed) else { return }
+  if lines.last?.text == trimmed { return }
+  lines.append((rank, trimmed))
+}
+
+func appendBody(_ text: String, rank: Int, into lines: inout [(rank: Int, text: String)]) {
+  if text.count <= 280 {
+    appendText(text, rank: rank, into: &lines)
+    return
+  }
+  for raw in text.split(whereSeparator: { $0.isNewline }) {
+    appendText(String(raw), rank: rank, into: &lines)
   }
 }
 
-func cleanWindowText(_ raw: String) -> String {
+func isLeafish(_ role: String) -> Bool {
+  ["AXButton", "AXPopUpButton", "AXCheckBox", "AXRadioButton", "AXDisclosureTriangle", "AXSlider", "AXStaticText", "AXImage"].contains(role)
+}
+
+func isListLike(_ role: String) -> Bool {
+  role == "AXList" || role == "AXOutline" || role == "AXTable" || role == "AXMenu"
+}
+
+func extractNode(
+  _ element: AXUIElement,
+  windowFrame: CGRect?,
+  browserChrome: Bool,
+  depth: Int,
+  into lines: inout [(rank: Int, text: String)]
+) -> Bool {
+  let role = roleOf(element)
+  if skipRoles.contains(role) { return false }
+  if browserChrome, role == "AXTabGroup" || role == "AXToolbar" { return false }
+  if visibility(of: element, windowFrame: windowFrame) == .offScreen { return false }
+  if boolAttribute(element, kAXHiddenAttribute as CFString) { return true }
+
+  if let selected = stringAttribute(element, kAXSelectedTextAttribute as CFString) {
+    appendText("Selected: \(selected)", rank: 0, into: &lines)
+  }
+  let editable = editableRoles.contains(role) || role.hasSuffix("Field")
+  if let value = stringAttribute(element, kAXValueAttribute as CFString) {
+    if role == "AXSearchField" || role.hasSuffix("SearchField") {
+      appendText("Search: \(value)", rank: 1, into: &lines)
+    } else if editable || role == "AXStaticText" || value.count >= 6 {
+      appendBody(value, rank: editable ? 1 : 2, into: &lines)
+    }
+  }
+  if !browserChrome, role == "AXWebArea" || role == "AXDocument" {
+    if let marker = markerString(element) {
+      for part in splitMarkerBody(marker).prefix(80) {
+        appendText(part, rank: 2, into: &lines)
+      }
+    }
+  }
+  if let title = stringAttribute(element, kAXTitleAttribute as CFString), !hasShortcutChrome(title), !isChromeTitle(title) {
+    let buttonLike = ["AXButton", "AXPopUpButton", "AXCheckBox", "AXRadioButton", "AXDisclosureTriangle"].contains(role)
+    if !buttonLike || title.contains(" ") {
+      appendText(title, rank: buttonLike ? 4 : 3, into: &lines)
+    }
+  }
+  if let description = stringAttribute(element, kAXDescriptionAttribute as CFString), !hasShortcutChrome(description), !isChromeTitle(description) {
+    appendText(description, rank: 3, into: &lines)
+  }
+  if let placeholder = stringAttribute(element, kAXPlaceholderValueAttribute as CFString) {
+    appendText(placeholder, rank: 2, into: &lines)
+  }
+  return true
+}
+
+func walk(
+  roots: [AXUIElement],
+  windowFrame: CGRect?,
+  browserChrome: Bool,
+  deadline: Date,
+  budget: inout Int,
+  maxDepth: Int,
+  children: (AXUIElement) -> [AXUIElement],
+  into lines: inout [(rank: Int, text: String)]
+) {
+  var queue: [(AXUIElement, Int)] = roots.map { ($0, 0) }
+  var index = 0
+  while index < queue.count, budget > 0, Date() <= deadline {
+    let (node, depth) = queue[index]
+    index += 1
+    if depth > maxDepth { continue }
+    budget -= 1
+    let keep = extractNode(node, windowFrame: windowFrame, browserChrome: browserChrome, depth: depth, into: &lines)
+    guard keep else { continue }
+    let role = roleOf(node)
+    if isLeafish(role) { continue }
+    let kids = children(node)
+    let cap = isListLike(role) ? 16 : (role == "AXToolbar" ? 48 : 80)
+    if role == "AXToolbar" || isListLike(role) {
+      for child in kids.prefix(cap) {
+        _ = extractNode(child, windowFrame: windowFrame, browserChrome: browserChrome, depth: depth + 1, into: &lines)
+      }
+      continue
+    }
+    for child in kids.prefix(cap) {
+      queue.append((child, depth + 1))
+    }
+  }
+}
+
+func collectText(
+  from element: AXUIElement,
+  windowFrame: CGRect?,
+  browserChrome: Bool,
+  deadline: Date,
+  budget: inout Int,
+  depth: Int = 0,
+  descend: Bool = true,
+  into lines: inout [(rank: Int, text: String)]
+) {
+  if Date() > deadline || budget <= 0 { return }
+  if !descend {
+    _ = extractNode(element, windowFrame: windowFrame, browserChrome: browserChrome, depth: depth, into: &lines)
+    return
+  }
+  var chromeBudget = min(budget, 1800)
+  walk(
+    roots: [element],
+    windowFrame: windowFrame,
+    browserChrome: browserChrome,
+    deadline: deadline,
+    budget: &chromeBudget,
+    maxDepth: 12,
+    children: structuralChildren,
+    into: &lines
+  )
+  budget -= (min(budget, 1800) - chromeBudget)
+  var bodyBudget = min(max(budget, 0), 1600)
+  walk(
+    roots: [element],
+    windowFrame: windowFrame,
+    browserChrome: browserChrome,
+    deadline: deadline,
+    budget: &bodyBudget,
+    maxDepth: 18,
+    children: contentChildren,
+    into: &lines
+  )
+  budget -= (min(max(budget, 0), 1600) - bodyBudget)
+}
+
+func cleanWindowText(_ rows: [(rank: Int, text: String)], windowName: String, owner: String) -> String {
   var seen = Set<String>()
   var kept: [String] = []
-  for line in raw.split(separator: "\n", omittingEmptySubsequences: false).map({ $0.trimmingCharacters(in: .whitespacesAndNewlines) }) {
-    if line.isEmpty { continue }
-    if shouldSkipChromeNoise(line) { continue }
-    if line.count < 2 { continue }
-    if seen.contains(line) { continue }
-    seen.insert(line)
-    kept.append(line)
-    if kept.count >= 400 { break }
+  let skipExact = Set([windowName, owner, "\(windowName) - \(owner)", "\(owner) - \(windowName)"].filter { !$0.isEmpty })
+  for row in rows.sorted(by: { $0.rank < $1.rank }) {
+    for raw in row.text.split(separator: "\n", omittingEmptySubsequences: false) {
+      let line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+      if line.count < 2 { continue }
+      if skipExact.contains(line) { continue }
+      if hasShortcutChrome(line) { continue }
+      if isChromeTitle(line) { continue }
+      if isJunkLine(line) { continue }
+      if seen.contains(line) { continue }
+      seen.insert(line)
+      kept.append(line)
+      if kept.count >= 180 { return kept.joined(separator: "\n") }
+    }
   }
   return kept.joined(separator: "\n")
 }
 
-func windowText(pid: pid_t, maxChars: Int) -> (text: String, truncated: Bool, trusted: Bool) {
-  let trusted = AXIsProcessTrusted()
-  guard trusted else { return ("", false, false) }
-  let app = AXUIElementCreateApplication(pid)
+func windowRoot(app: AXUIElement, windowName: String) -> AXUIElement {
+  AXUIElementSetMessagingTimeout(app, 3.0)
   var focused: CFTypeRef?
-  var root: AXUIElement = app
   if AXUIElementCopyAttributeValue(app, kAXFocusedWindowAttribute as CFString, &focused) == .success,
      let focused,
      CFGetTypeID(focused) == AXUIElementGetTypeID() {
-    root = (focused as! AXUIElement)
+    return focused as! AXUIElement
   }
-  var lines: [String] = []
-  var budget = 900
-  collectText(from: root, deadline: Date().addingTimeInterval(1.2), budget: &budget, depth: 0, into: &lines)
-  let text = cleanWindowText(lines.joined(separator: "\n"))
+  let windows = axElementList(app, kAXWindowsAttribute as CFString)
+  if !windowName.isEmpty,
+     let match = windows.first(where: { stringAttribute($0, kAXTitleAttribute as CFString) == windowName }) {
+    return match
+  }
+  return windows.first ?? app
+}
+
+func windowText(pid: pid_t, owner: String, windowName: String, maxChars: Int) -> (text: String, truncated: Bool, trusted: Bool) {
+  let trusted = AXIsProcessTrusted()
+  guard trusted else { return ("", false, false) }
+  let app = AXUIElementCreateApplication(pid)
+  let root = windowRoot(app: app, windowName: windowName)
+  var rows: [(rank: Int, text: String)] = []
+  let deadline = Date().addingTimeInterval(2.8)
+  var focusedRef: CFTypeRef?
+  if AXUIElementCopyAttributeValue(root, kAXFocusedUIElementAttribute as CFString, &focusedRef) == .success,
+     let focusedRef,
+     CFGetTypeID(focusedRef) == AXUIElementGetTypeID() {
+    let focusedElement = focusedRef as! AXUIElement
+    let focusedRole = roleOf(focusedElement)
+    if focusedRole != "AXWindow", focusedRole != "AXApplication" {
+      var focusBudget = 120
+      collectText(
+        from: focusedElement,
+        windowFrame: nil,
+        browserChrome: false,
+        deadline: deadline,
+        budget: &focusBudget,
+        depth: 0,
+        descend: false,
+        into: &rows
+      )
+    }
+  }
+  var budget = 4500
+  collectText(
+    from: root,
+    windowFrame: isBrowserOwner(owner) ? elementFrame(root) : nil,
+    browserChrome: isBrowserOwner(owner),
+    deadline: deadline,
+    budget: &budget,
+    depth: 0,
+    into: &rows
+  )
+  let text = cleanWindowText(rows, windowName: windowName, owner: owner)
   if text.count > maxChars {
     let end = text.index(text.startIndex, offsetBy: maxChars)
     return (String(text[..<end]), true, true)
@@ -215,7 +595,7 @@ func frontPayload(skipSelf: Bool, maxChars: Int) -> [String: Any] {
   guard let target = pickTargetWindow(skipOwners: extraSkip(skipSelf: skipSelf)) else {
     return ["ok": false, "error": "no on-screen window to capture"]
   }
-  let extracted = windowText(pid: target.pid, maxChars: maxChars)
+  let extracted = windowText(pid: target.pid, owner: target.owner, windowName: target.name, maxChars: maxChars)
   return [
     "ok": true,
     "owner": target.owner,

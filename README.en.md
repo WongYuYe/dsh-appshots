@@ -81,7 +81,9 @@ Namespace `dsh-appshots` in `~/.dsh/settings.yaml`:
 
 - macOS and Windows only
 - Window text comes from the platform accessibility tree, so some apps expose only visible copy
-- Chrome chrome such as the tab strip and bookmark bar is filtered out of the hidden text
+- Hidden text prefers on-screen editable values, the current selection, and body copy; browser tab strips are still filtered
+- Opening an attached Appshot preview adds a View text control that shows the accessibility copy for that window
+- Terminal pixels (VS Code xterm) are usually absent from accessibility, so compile logs still come from the screenshot
 - Windows capture copies the on-screen pixels of the window rectangle; occluded windows include whatever is visible
 
 ## License
