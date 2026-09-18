@@ -67,7 +67,7 @@ Namespace `dsh-appshots` in `~/.dsh/settings.yaml`:
 | Field | Default | Meaning |
 |---|---|---|
 | `skipSelf` | `true` | Skip DSH Desktop itself |
-| `attachText` | `true` | Inject cleaned window text as hidden model context on send |
+| `attachText` | `true` | Inject the accessibility tree as hidden model context on send |
 | `recentWindowMs` | `60000` | If no session is open, reuse the session captured within this window |
 | `hotkeyMode` | `auto` | `auto` / `both-command` / `both-control` / `carbon` / `win-hotkey` / `off` |
 | `carbonKeyCode` | `0` | Carbon key code when `hotkeyMode` is `carbon` |
@@ -81,7 +81,7 @@ Namespace `dsh-appshots` in `~/.dsh/settings.yaml`:
 
 - macOS and Windows only
 - Window text comes from the platform accessibility tree, so some apps expose only visible copy
-- Hidden text prefers on-screen editable values, the current selection, and body copy; browser tab strips are still filtered
+- Hidden text is an indented VoiceOver / UI Automation tree (role, Description / Value / URL), not flattened unique lines
 - Opening an attached Appshot preview adds a View text control that shows the accessibility copy for that window
 - Terminal pixels (VS Code xterm) are usually absent from accessibility, so compile logs still come from the screenshot
 - Windows capture copies the on-screen pixels of the window rectangle; occluded windows include whatever is visible

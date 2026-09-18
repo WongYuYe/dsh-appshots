@@ -67,7 +67,7 @@ Windows 会在第一次截图时用系统自带的 `csc.exe`（.NET Framework 4.
 | 字段 | 默认值 | 含义 |
 |---|---|---|
 | `skipSelf` | `true` | 跳过 DSH Desktop 自身 |
-| `attachText` | `true` | 发送时把清洗后的窗口文字作为隐藏模型上下文注入 |
+| `attachText` | `true` | 发送时把辅助功能树作为隐藏模型上下文注入 |
 | `recentWindowMs` | `60000` | 没有打开会话时，复用这个时间窗口内截图过的会话 |
 | `hotkeyMode` | `auto` | `auto` / `both-command` / `both-control` / `carbon` / `win-hotkey` / `off` |
 | `carbonKeyCode` | `0` | `hotkeyMode` 为 `carbon` 时的 Carbon 键码 |
@@ -81,7 +81,7 @@ Windows 会在第一次截图时用系统自带的 `csc.exe`（.NET Framework 4.
 
 - 仅支持 macOS 和 Windows
 - 窗口文字来自系统辅助功能树，部分应用只暴露可见文本
-- 隐藏文本优先保留当前屏幕内的输入值、选区和正文；浏览器标签栏仍会过滤
+- 隐藏文本按 VoiceOver / UI Automation 树输出（角色、缩进、Description / Value / URL），不再做成扁平行
 - 点击已附加的 Appshot 预览时，右上角可「查看文本」，展示当前窗口读到的辅助功能文字
 - 终端像素（如 VS Code xterm）默认不进辅助功能树，编译日志仍以截图为准
 - Windows 截的是窗口矩形的屏幕像素，被挡住的窗口会带上挡住它的内容

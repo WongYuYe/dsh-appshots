@@ -96,26 +96,18 @@ func stringAttribute(_ element: AXUIElement, _ name: CFString) -> String? {
   return nil
 }
 
-let chromeChromeNoise: Set<String> = [
-  "Skip to content", "Navigation Menu", "Homepage", "Global", "Platform", "Solutions",
-  "Resources", "Open Source", "Enterprise", "Pricing", "Sign in", "Sign up",
-  "Appearance settings", "Toby: Tab Management Tool", "自定义 Chrome", "返回", "前进",
-  "重新加载", "查看网站信息", "为此标签页添加书签", "扩展程序", "创建二维码 - 已固定",
-  "重新启动即可更新", "书签", "已保存的标签页分组", "标签页分组", "分隔符",
-  "标签页搜索", "打开 Chrome 中的 Gemini", "新标签页", "关闭", "翻译",
-  "安装“GitHub”", "Accessibility help", "Go to Google Home", "Clear",
-  "Search by voice", "Search by image", "Search", "Share", "Google apps",
-  "AI Mode", "All", "Images", "Videos", "Shopping", "Short videos", "News",
-  "More filters", "More", "Tools", "Search Results", "Page Navigation",
-  "Footer Links", "Help", "Send feedback", "Privacy", "Terms",
-]
-
 let skipRoles: Set<String> = [
-  "AXMenuBar", "AXMenu", "AXMenuItem", "AXHelpTag", "AXImage",
+  "AXMenuBar", "AXHelpTag",
+  "AXColumn",
+  "AXCloseButton", "AXMinimizeButton", "AXZoomButton", "AXFullScreenButton",
 ]
 
-let editableRoles: Set<String> = [
-  "AXTextField", "AXTextArea", "AXComboBox", "AXSearchField", "AXStaticText",
+let skipRoleDescriptions: Set<String> = [
+  "关闭按钮", "缩放按钮", "最小化按钮", "全屏按钮", "全屏幕按钮", "进入全屏幕",
+]
+
+let chromeRoles: Set<String> = [
+  "AXToolbar", "AXTabGroup",
 ]
 
 func roleOf(_ element: AXUIElement) -> String {
@@ -130,86 +122,6 @@ func boolAttribute(_ element: AXUIElement, _ name: CFString) -> Bool {
   return false
 }
 
-func axPoint(_ element: AXUIElement) -> CGPoint? {
-  var ref: CFTypeRef?
-  guard AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &ref) == .success,
-        let raw = ref, CFGetTypeID(raw) == AXValueGetTypeID()
-  else { return nil }
-  var point = CGPoint.zero
-  guard AXValueGetValue(raw as! AXValue, .cgPoint, &point) else { return nil }
-  return point
-}
-
-func axSize(_ element: AXUIElement) -> CGSize? {
-  var ref: CFTypeRef?
-  guard AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &ref) == .success,
-        let raw = ref, CFGetTypeID(raw) == AXValueGetTypeID()
-  else { return nil }
-  var size = CGSize.zero
-  guard AXValueGetValue(raw as! AXValue, .cgSize, &size) else { return nil }
-  return size
-}
-
-func elementFrame(_ element: AXUIElement) -> CGRect? {
-  guard let origin = axPoint(element), let size = axSize(element), size.width >= 1, size.height >= 1 else { return nil }
-  return CGRect(origin: origin, size: size)
-}
-
-func isBrowserOwner(_ owner: String) -> Bool {
-  ["Google Chrome", "Chromium", "Microsoft Edge", "Arc", "Brave Browser", "Vivaldi"].contains(owner)
-}
-
-func isPrivateUse(_ scalar: Unicode.Scalar) -> Bool {
-  (0xE000...0xF8FF).contains(scalar.value)
-    || (0xF0000...0xFFFFD).contains(scalar.value)
-    || (0x100000...0x10FFFD).contains(scalar.value)
-}
-
-func isIconHeavy(_ line: String) -> Bool {
-  let scalars = Array(line.unicodeScalars)
-  guard !scalars.isEmpty else { return true }
-  if scalars.count <= 2, scalars.allSatisfy({ $0.properties.isEmoji || isPrivateUse($0) }) { return true }
-  let icons = scalars.filter { isPrivateUse($0) || $0.properties.isEmoji }.count
-  return icons * 2 >= scalars.count
-}
-
-func isLowValue(_ line: String) -> Bool {
-  let folded = line.lowercased()
-  if ["on", "off", "true", "false", "yes", "no", "0", "1"].contains(folded) { return true }
-  if line.count <= 3, line.allSatisfy({ $0.isNumber || $0 == "." }) { return true }
-  return false
-}
-
-func shouldSkipChromeNoise(_ line: String) -> Bool {
-  if chromeChromeNoise.contains(line) { return true }
-  if line.hasPrefix("关闭") { return true }
-  if line.contains("内存用量") { return true }
-  if line.contains("闲置标签页") { return true }
-  if line.hasPrefix("要获取缺失的图片说明") { return true }
-  return false
-}
-
-func isStaleFindWidget(_ line: String) -> Bool {
-  line.range(of: #"\d+\s+of\s+\d+\s+found"#, options: .regularExpression) != nil
-    || line.contains(" found for '")
-    || line.hasPrefix("found for '")
-}
-
-func isJunkLine(_ line: String) -> Bool {
-  if shouldSkipChromeNoise(line) { return true }
-  if isStaleFindWidget(line) { return true }
-  if isIconHeavy(line) { return true }
-  if line.contains("command:") { return true }
-  if line.contains("gitlens.") { return true }
-  if line.contains("$(") { return true }
-  if line.contains("utm_source=") { return true }
-  if line.lowercased().contains("screen reader") { return true }
-  if line.contains("YesNoLearn More") || line == "Learn More" { return true }
-  if line.hasPrefix("Open in Agents") { return true }
-  if line.count > 280 { return true }
-  return false
-}
-
 func axElementList(_ element: AXUIElement, _ name: CFString) -> [AXUIElement] {
   var ref: CFTypeRef?
   guard AXUIElementCopyAttributeValue(element, name, &ref) == .success, let ref else { return [] }
@@ -218,286 +130,499 @@ func axElementList(_ element: AXUIElement, _ name: CFString) -> [AXUIElement] {
   return []
 }
 
+struct AXID: Hashable {
+  let element: AXUIElement
+  func hash(into hasher: inout Hasher) {
+    hasher.combine(CFHash(element))
+  }
+  static func == (lhs: AXID, rhs: AXID) -> Bool {
+    CFEqual(lhs.element, rhs.element)
+  }
+}
+
 func uniqueChildren(_ element: AXUIElement, _ names: [CFString]) -> [AXUIElement] {
-  var seen = Set<ObjectIdentifier>()
+  var seen = Set<AXID>()
   var out: [AXUIElement] = []
   for name in names {
     for child in axElementList(element, name) {
-      let key = ObjectIdentifier(child)
-      if seen.insert(key).inserted { out.append(child) }
+      if seen.insert(AXID(element: child)).inserted { out.append(child) }
     }
   }
   return out
 }
 
 func structuralChildren(_ element: AXUIElement) -> [AXUIElement] {
-  uniqueChildren(element, [kAXChildrenAttribute as CFString, kAXVisibleChildrenAttribute as CFString])
+  let kids = uniqueChildren(element, [kAXChildrenAttribute as CFString])
+  return kids.isEmpty ? uniqueChildren(element, [kAXVisibleChildrenAttribute as CFString]) : kids
 }
 
-func contentChildren(_ element: AXUIElement) -> [AXUIElement] {
-  let mixed = uniqueChildren(element, [
-    kAXContentsAttribute as CFString,
-    kAXVisibleChildrenAttribute as CFString,
-    kAXChildrenAttribute as CFString,
-  ])
-  return mixed.isEmpty ? structuralChildren(element) : mixed
+func isContainerRole(_ role: String) -> Bool {
+  ["AXGroup", "AXGenericElement", "AXUnknown", "AXScrollArea", "AXSplitter"].contains(role)
 }
 
-enum Visibility {
-  case onScreen
-  case unknown
-  case offScreen
+func isAttributeSettable(_ element: AXUIElement, _ name: CFString) -> Bool {
+  var settable: DarwinBoolean = false
+  guard AXUIElementIsAttributeSettable(element, name, &settable) == .success else { return false }
+  return settable.boolValue
 }
 
-func visibility(of element: AXUIElement, windowFrame: CGRect?) -> Visibility {
-  guard let windowFrame else { return .onScreen }
-  guard let frame = elementFrame(element) else { return .unknown }
-  if frame.width < 4 || frame.height < 4 { return .unknown }
-  let visible = windowFrame.intersection(frame)
-  if visible.isNull || visible.width < 2 || visible.height < 2 { return .offScreen }
-  return .onScreen
+func compactURL(_ raw: String) -> String {
+  var value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+  let folded = value.lowercased()
+  for prefix in ["https://www.", "http://www.", "https://", "http://"] {
+    if folded.hasPrefix(prefix) {
+      value = String(value.dropFirst(prefix.count))
+      break
+    }
+  }
+  return value
 }
 
-func isChromeTitle(_ line: String) -> Bool {
-  let folded = line.lowercased()
-  if folded.hasSuffix(" actions") || folded.hasSuffix(" action") { return true }
-  if line.hasSuffix("...") { return true }
-  if folded.contains("view switcher") { return true }
-  if folded.hasPrefix("toggle ") { return true }
-  if folded.contains("gitlens") || folded.contains("gitpod") || folded.contains("copilot") { return true }
-  if folded.contains("synchronize") || folded.contains("search editor") { return true }
-  if folded.contains("submit search") || folded.contains("view as tree") { return true }
-  if ["update", "refresh", "manage", "accounts", "remote", "notifications", "containers",
-      "python", "ports", "node", "maximize panel", "kill terminal", "open quick access",
-      "agent status", "check-all prettier", "collapse all", "clear search results",
-      "open settings", "debug console"].contains(folded) { return true }
+func urlAttribute(_ element: AXUIElement) -> String? {
+  var ref: CFTypeRef?
+  guard AXUIElementCopyAttributeValue(element, kAXURLAttribute as CFString, &ref) == .success, let ref else { return nil }
+  if let url = ref as? URL { return compactURL(url.absoluteString) }
+  if let text = ref as? String, !text.isEmpty { return compactURL(text) }
+  return nil
+}
+
+let roleLabels: [String: String] = [
+  "AXWindow": "标准窗口",
+  "AXGroup": "container",
+  "AXGenericElement": "container",
+  "AXScrollArea": "container",
+  "AXSplitter": "container",
+  "AXWebArea": "HTML 内容",
+  "AXButton": "按钮",
+  "AXLink": "link",
+  "AXStaticText": "文本",
+  "AXUnknown": "container",
+  "AXList": "内容列表",
+  "AXHeading": "标题",
+  "AXToolbar": "工具栏",
+  "AXPopUpButton": "弹出式按钮",
+  "AXTextField": "文本栏",
+  "AXTextArea": "文本栏",
+  "AXSearchField": "文本栏",
+  "AXComboBox": "组合框",
+  "AXCheckBox": "复选框",
+  "AXRadioButton": "标签",
+  "AXTabGroup": "标签组",
+  "AXTab": "标签",
+  "AXSeparator": "分离器",
+  "AXImage": "图像",
+  "AXDisclosureTriangle": "切换按钮",
+  "AXMenuButton": "弹出式按钮",
+  "AXRow": "row",
+  "AXOutline": "外框",
+  "AXSlider": "滑块",
+  "AXCell": "单元格",
+  "AXColumnHeader": "列标题",
+  "AXTable": "表格",
+  "AXColumn": "栏",
+  "AXMenu": "菜单",
+  "AXMenuItem": "",
+]
+
+func linkHasURL(_ element: AXUIElement) -> Bool {
+  if let url = urlAttribute(element), !url.isEmpty { return true }
+  if let value = stringAttribute(element, kAXValueAttribute as CFString), !value.isEmpty {
+    let lower = value.lowercased()
+    if lower.hasPrefix("http://") || lower.hasPrefix("https://") || lower.hasPrefix("chrome://") {
+      return true
+    }
+    // Chrome often exposes path-style link values without scheme.
+    if value.contains("/") || value.contains(".") { return true }
+  }
   return false
 }
 
-func hasShortcutChrome(_ line: String) -> Bool {
-  line.contains("⌘") || line.contains("⇧") || line.contains("⌃") || line.contains("⌥")
-    || line.contains("Ctrl+") || line.contains("Cmd+") || line.contains("Shift+")
-}
-
-func stripShortcutChrome(_ line: String) -> String {
-  let pattern = #"(⌘|⇧|⌃|⌥|Ctrl\+|Cmd\+|Shift\+|Alt\+)+[A-Za-z0-9]?"#
-  return line.replacingOccurrences(of: pattern, with: "\n", options: .regularExpression)
-}
-
-func parameterizedAttribute(_ element: AXUIElement, _ name: String, _ argument: CFTypeRef) -> CFTypeRef? {
-  var ref: CFTypeRef?
-  guard AXUIElementCopyParameterizedAttributeValue(element, name as CFString, argument, &ref) == .success else { return nil }
-  return ref
-}
-
-func markerString(_ element: AXUIElement) -> String? {
-  var startRef: CFTypeRef?
-  var endRef: CFTypeRef?
-  guard AXUIElementCopyAttributeValue(element, "AXStartTextMarker" as CFString, &startRef) == .success,
-        AXUIElementCopyAttributeValue(element, "AXEndTextMarker" as CFString, &endRef) == .success,
-        let startRef, let endRef,
-        CFGetTypeID(startRef) == AXTextMarkerGetTypeID(),
-        CFGetTypeID(endRef) == AXTextMarkerGetTypeID()
-  else { return nil }
-  let range = AXTextMarkerRangeCreate(kCFAllocatorDefault, startRef as! AXTextMarker, endRef as! AXTextMarker)
-  guard let text = parameterizedAttribute(element, "AXStringForTextMarkerRange", range) as? String else { return nil }
-  let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-  return trimmed.isEmpty ? nil : trimmed
-}
-
-func splitMarkerBody(_ text: String) -> [String] {
-  var current = ""
-  var parts: [String] = []
-  func flush() {
-    let piece = current.trimmingCharacters(in: .whitespacesAndNewlines)
-    current = ""
-    guard piece.count >= 2 else { return }
-    for raw in stripShortcutChrome(piece).split(whereSeparator: \.isNewline) {
-      let line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-      if line.count >= 2 { parts.append(line) }
-    }
-  }
-  for scalar in text.unicodeScalars {
-    if scalar == "\u{FFFC}" || isPrivateUse(scalar) || scalar.properties.isEmoji {
-      flush()
-      continue
-    }
-    if scalar == "\n" || scalar == "\r" {
-      flush()
-      continue
-    }
-    current.unicodeScalars.append(scalar)
-  }
-  flush()
-  return parts
-}
-
-func appendText(_ text: String, rank: Int, into lines: inout [(rank: Int, text: String)]) {
-  let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-  guard trimmed.count >= 2, !isLowValue(trimmed), !isJunkLine(trimmed) else { return }
-  if lines.last?.text == trimmed { return }
-  lines.append((rank, trimmed))
-}
-
-func appendBody(_ text: String, rank: Int, into lines: inout [(rank: Int, text: String)]) {
-  if text.count <= 280 {
-    appendText(text, rank: rank, into: &lines)
-    return
-  }
-  for raw in text.split(whereSeparator: { $0.isNewline }) {
-    appendText(String(raw), rank: rank, into: &lines)
-  }
-}
-
-func isLeafish(_ role: String) -> Bool {
-  ["AXButton", "AXPopUpButton", "AXCheckBox", "AXRadioButton", "AXDisclosureTriangle", "AXSlider", "AXStaticText", "AXImage"].contains(role)
-}
-
-func isListLike(_ role: String) -> Bool {
-  role == "AXList" || role == "AXOutline" || role == "AXTable" || role == "AXMenu"
-}
-
-func extractNode(
-  _ element: AXUIElement,
-  windowFrame: CGRect?,
-  browserChrome: Bool,
-  depth: Int,
-  into lines: inout [(rank: Int, text: String)]
-) -> Bool {
+func roleDescription(of element: AXUIElement) -> String {
   let role = roleOf(element)
-  if skipRoles.contains(role) { return false }
-  if browserChrome, role == "AXTabGroup" || role == "AXToolbar" { return false }
-  if visibility(of: element, windowFrame: windowFrame) == .offScreen { return false }
-  if boolAttribute(element, kAXHiddenAttribute as CFString) { return true }
-
-  if let selected = stringAttribute(element, kAXSelectedTextAttribute as CFString) {
-    appendText("Selected: \(selected)", rank: 0, into: &lines)
+  if role == "AXLink" {
+    // Codex: URL-bearing web links → "link Description:, Value:";
+    // named in-page links (e.g. 复制code) → "链接 …" with children.
+    return linkHasURL(element) ? "link" : "链接"
   }
-  let editable = editableRoles.contains(role) || role.hasSuffix("Field")
-  if let value = stringAttribute(element, kAXValueAttribute as CFString) {
-    if role == "AXSearchField" || role.hasSuffix("SearchField") {
-      appendText("Search: \(value)", rank: 1, into: &lines)
-    } else if editable || role == "AXStaticText" || value.count >= 6 {
-      appendBody(value, rank: editable ? 1 : 2, into: &lines)
+  if role == "AXSplitter" {
+    let name = stringAttribute(element, kAXTitleAttribute as CFString)
+      ?? stringAttribute(element, kAXDescriptionAttribute as CFString)
+    if let name, !name.isEmpty {
+      return "分离器"
     }
+    return "container"
   }
-  if !browserChrome, role == "AXWebArea" || role == "AXDocument" {
-    if let marker = markerString(element) {
-      for part in splitMarkerBody(marker).prefix(80) {
-        appendText(part, rank: 2, into: &lines)
-      }
-    }
+  if ["AXGroup", "AXGenericElement", "AXScrollArea", "AXUnknown", "AXRow", "AXOutline", "AXSlider", "AXMenu", "AXMenuItem", "AXImage"].contains(role),
+     let mapped = roleLabels[role] {
+    return mapped
   }
-  if let title = stringAttribute(element, kAXTitleAttribute as CFString), !hasShortcutChrome(title), !isChromeTitle(title) {
-    let buttonLike = ["AXButton", "AXPopUpButton", "AXCheckBox", "AXRadioButton", "AXDisclosureTriangle"].contains(role)
-    if !buttonLike || title.contains(" ") {
-      appendText(title, rank: buttonLike ? 4 : 3, into: &lines)
-    }
+  if let description = stringAttribute(element, kAXRoleDescriptionAttribute as CFString) {
+    return description
   }
-  if let description = stringAttribute(element, kAXDescriptionAttribute as CFString), !hasShortcutChrome(description), !isChromeTitle(description) {
-    appendText(description, rank: 3, into: &lines)
-  }
-  if let placeholder = stringAttribute(element, kAXPlaceholderValueAttribute as CFString) {
-    appendText(placeholder, rank: 2, into: &lines)
-  }
-  return true
+  return roleLabels[role] ?? role.replacingOccurrences(of: "AX", with: "")
 }
 
-func walk(
-  roots: [AXUIElement],
-  windowFrame: CGRect?,
-  browserChrome: Bool,
-  deadline: Date,
-  budget: inout Int,
-  maxDepth: Int,
-  children: (AXUIElement) -> [AXUIElement],
-  into lines: inout [(rank: Int, text: String)]
-) {
-  var queue: [(AXUIElement, Int)] = roots.map { ($0, 0) }
-  var index = 0
-  while index < queue.count, budget > 0, Date() <= deadline {
-    let (node, depth) = queue[index]
-    index += 1
-    if depth > maxDepth { continue }
-    budget -= 1
-    let keep = extractNode(node, windowFrame: windowFrame, browserChrome: browserChrome, depth: depth, into: &lines)
-    guard keep else { continue }
-    let role = roleOf(node)
-    if isLeafish(role) { continue }
-    let kids = children(node)
-    let cap = isListLike(role) ? 16 : (role == "AXToolbar" ? 48 : 80)
-    if role == "AXToolbar" || isListLike(role) {
-      for child in kids.prefix(cap) {
-        _ = extractNode(child, windowFrame: windowFrame, browserChrome: browserChrome, depth: depth + 1, into: &lines)
-      }
+func nodeIdentity(_ element: AXUIElement) -> (role: String, name: String?, description: String?, value: String?, url: String?, help: String?, placeholder: String?) {
+  let role = roleOf(element)
+  var title = stringAttribute(element, kAXTitleAttribute as CFString)
+  let description = stringAttribute(element, kAXDescriptionAttribute as CFString)
+  let help = stringAttribute(element, kAXHelpAttribute as CFString)
+  let placeholder = stringAttribute(element, kAXPlaceholderValueAttribute as CFString)
+  var value = stringAttribute(element, kAXValueAttribute as CFString)
+  let url = urlAttribute(element)
+  if title == nil, ["AXStaticText", "AXHeading"].contains(role), let staticValue = value {
+    title = staticValue
+    value = nil
+  }
+  let webStyleLink = role == "AXLink" && linkHasURL(element)
+  let keepDescriptionField = ["AXLink", "AXSlider", "AXTab", "AXRadioButton", "AXTextField", "AXTextArea"].contains(role)
+    && !(role == "AXLink" && !webStyleLink)
+  var name = title
+  let usableDescription = description.flatMap { text -> String? in
+    if text.contains("要获取缺失的图片说明") || text.localizedCaseInsensitiveContains("to get missing") {
+      return nil
+    }
+    return text
+  }
+  if name == nil, role == "AXLink", !webStyleLink, let usableDescription, !usableDescription.isEmpty {
+    name = usableDescription
+  } else if name == nil, !keepDescriptionField, let usableDescription, !usableDescription.isEmpty {
+    name = usableDescription
+  }
+  let searchLike = role == "AXSearchField"
+    || stringAttribute(element, kAXRoleDescriptionAttribute as CFString) == "搜索文本字段"
+  if searchLike, let placeholder, !placeholder.isEmpty {
+    name = placeholder
+  }
+  var resolvedURL = url
+  if role == "AXWindow", resolvedURL == nil {
+    resolvedURL = firstWebAreaURL(element)
+  }
+  if name == nil, ["AXWebArea", "AXDocument"].contains(role), let webURL = resolvedURL {
+    name = webURL
+    resolvedURL = nil
+  }
+  return (role, name, description, value, resolvedURL, help, placeholder)
+}
+
+func nodeLine(_ element: AXUIElement) -> String {
+  let ident = nodeIdentity(element)
+  let role = ident.role
+  let roleDesc = roleDescription(of: element)
+  let editableRoles = ["AXTextField", "AXTextArea", "AXSearchField", "AXComboBox", "AXTab", "AXRadioButton"]
+  let booleanRoles = ["AXRadioButton", "AXTab"]
+  let rawValue = (ident.value ?? "").lowercased()
+  let booleanValue = ["on", "off", "0", "1", "true", "false"].contains(rawValue)
+  var states: [String] = []
+  if boolAttribute(element, kAXSelectedAttribute as CFString) { states.append("selected") }
+  let settable = editableRoles.contains(role) && isAttributeSettable(element, kAXValueAttribute as CFString)
+  if settable { states.append("settable") }
+  if settable && (booleanRoles.contains(role) || booleanValue) { states.append("boolean") }
+
+  var head = roleDesc
+  if !states.isEmpty {
+    head += " (\(states.joined(separator: ", ")))"
+  }
+  if let name = ident.name, !name.isEmpty {
+    head += head.isEmpty ? name : " \(name)"
+  }
+
+  var extras: [String] = []
+  let noisyDescription = (ident.description ?? "").contains("要获取缺失的图片说明")
+    || (ident.description ?? "").localizedCaseInsensitiveContains("to get missing")
+  let usedDescriptionAsName = ident.name != nil && ident.name == ident.description && ident.name != stringAttribute(element, kAXTitleAttribute as CFString)
+  if let description = ident.description, description != ident.name, !usedDescriptionAsName, !noisyDescription {
+    extras.append("Description: \(description)")
+  }
+  if booleanRoles.contains(role) || roleDesc == "标签" {
+    if let value = ident.value, booleanValue {
+      extras.append("Value: \(normalizeBooleanValue(value))")
+    } else if !extras.contains(where: { $0.hasPrefix("Value:") }) {
+      extras.append("Value: \(states.contains("selected") ? "on" : "off")")
+    }
+  } else if let value = ident.value, !value.isEmpty, value != ident.name, value != ident.description {
+    if role == "AXWebArea" || role == "AXDocument" {
+      // Keep the tree; the page body lives in child nodes.
+    } else if value.count <= 800 {
+      extras.append("Value: \(compactURL(value))")
+    }
+  }
+  if let placeholder = ident.placeholder, placeholder != ident.name {
+    extras.append("Placeholder: \(placeholder)")
+  }
+  if let help = ident.help, help != ident.name, help != ident.description {
+    extras.append("Help: \(help)")
+  }
+  if let url = ident.url {
+    if role == "AXLink" && !extras.contains(where: { $0.hasPrefix("Value:") }) {
+      extras.append("Value: \(url)")
+    } else if role != "AXLink" {
+      extras.append("URL: \(url)")
+    }
+  }
+  if extras.isEmpty { return head }
+  if ident.name == nil {
+    return "\(head) \(extras.joined(separator: ", "))".trimmingCharacters(in: .whitespaces)
+  }
+  return "\(head), \(extras.joined(separator: ", "))"
+}
+
+func shouldSkipDuplicateChild(_ parent: AXUIElement, _ child: AXUIElement) -> Bool {
+  guard roleOf(child) == "AXStaticText" else { return false }
+  let parentRole = roleOf(parent)
+  let childIdent = nodeIdentity(child)
+  if (childIdent.name ?? "").isEmpty { return true }
+  if ["AXHeading", "AXMenuItem", "AXButton"].contains(parentRole) { return false }
+  let parentIdent = nodeIdentity(parent)
+  guard let childName = childIdent.name, !childName.isEmpty else { return false }
+  return childName == parentIdent.name || childName == parentIdent.description
+}
+
+func isUnlabeled(_ element: AXUIElement) -> Bool {
+  let ident = nodeIdentity(element)
+  let named = ident.name?.isEmpty == false
+  let described = ident.description?.isEmpty == false
+  let valued = ident.value?.isEmpty == false
+  let urled = ident.url?.isEmpty == false
+  let helped = ident.help?.isEmpty == false
+  return !named && !described && !valued && !urled && !helped
+}
+
+func normalizeBooleanValue(_ value: String) -> String {
+  switch value.lowercased() {
+  case "1", "true", "on": return "on"
+  case "0", "false", "off": return "off"
+  default: return value
+  }
+}
+
+func firstWebAreaURL(_ element: AXUIElement, depth: Int = 0) -> String? {
+  if depth > 8 { return nil }
+  if ["AXWebArea", "AXDocument"].contains(roleOf(element)), let url = urlAttribute(element) {
+    return url
+  }
+  for child in structuralChildren(element).prefix(30) {
+    if let url = firstWebAreaURL(child, depth: depth + 1) { return url }
+  }
+  return nil
+}
+
+func markdownLink(_ element: AXUIElement) -> String? {
+  guard roleOf(element) == "AXLink" else { return nil }
+  let ident = nodeIdentity(element)
+  let label = ident.description ?? ident.name ?? ""
+  let href = ident.value ?? ident.url ?? ""
+  guard !label.isEmpty, !href.isEmpty else { return nil }
+  return "[\(label)](\(href))"
+}
+
+func isSkippedNode(_ element: AXUIElement) -> Bool {
+  let role = roleOf(element)
+  if skipRoles.contains(role) { return true }
+  if let roleDesc = stringAttribute(element, kAXRoleDescriptionAttribute as CFString),
+     skipRoleDescriptions.contains(roleDesc) {
+    return true
+  }
+  if boolAttribute(element, kAXHiddenAttribute as CFString) { return true }
+  return false
+}
+
+func meaningfulChildren(_ element: AXUIElement) -> [AXUIElement] {
+  var out: [AXUIElement] = []
+  for child in structuralChildren(element) {
+    if isSkippedNode(child) { continue }
+    if isContainerRole(roleOf(child)), isUnlabeled(child), meaningfulChildren(child).isEmpty {
       continue
     }
-    for child in kids.prefix(cap) {
-      queue.append((child, depth + 1))
-    }
+    out.append(child)
   }
+  return out
 }
 
-func collectText(
-  from element: AXUIElement,
-  windowFrame: CGRect?,
-  browserChrome: Bool,
+func unwrapMenuItems(_ element: AXUIElement) -> [AXUIElement] {
+  var items: [AXUIElement] = []
+  for child in meaningfulChildren(element) {
+    let role = roleOf(child)
+    if role == "AXMenuItem" {
+      items.append(child)
+    } else if isContainerRole(role), isUnlabeled(child) {
+      items.append(contentsOf: unwrapMenuItems(child))
+    }
+  }
+  return items
+}
+
+func menuItemHasSubmenu(_ item: AXUIElement) -> Bool {
+  func walk(_ element: AXUIElement) -> Bool {
+    for child in structuralChildren(element) {
+      if isSkippedNode(child) { continue }
+      let role = roleOf(child)
+      if role == "AXMenu" { return true }
+      if isContainerRole(role), isUnlabeled(child), walk(child) { return true }
+    }
+    return false
+  }
+  return walk(item)
+}
+
+func isUnlabeledWrapper(_ element: AXUIElement, kids: [AXUIElement]) -> Bool {
+  isContainerRole(roleOf(element)) && isUnlabeled(element) && kids.count <= 1
+}
+
+func expandedKids(_ element: AXUIElement) -> [AXUIElement] {
+  var out: [AXUIElement] = []
+  for child in meaningfulChildren(element) {
+    let childKids = meaningfulChildren(child)
+    if isUnlabeledWrapper(child, kids: childKids) {
+      out.append(contentsOf: expandedKids(child))
+    } else {
+      out.append(child)
+    }
+  }
+  return out
+}
+
+func itemHasDirectLink(_ item: AXUIElement) -> Bool {
+  for child in structuralChildren(item) {
+    if isSkippedNode(child) { continue }
+    let role = roleOf(child)
+    if role == "AXMenu" { continue }
+    if role == "AXLink" { return true }
+    if isContainerRole(role), isUnlabeled(child), itemHasDirectLink(child) { return true }
+  }
+  return false
+}
+
+func isLeafyMenu(_ menu: AXUIElement) -> Bool {
+  let items = unwrapMenuItems(menu)
+  if items.isEmpty { return false }
+  let linked = items.filter(itemHasDirectLink).count
+  return linked >= 1 && linked * 2 >= items.count
+}
+
+func shouldHoistMenu(_ element: AXUIElement, parentRole: String, inLeafMenu: Bool) -> Bool {
+  guard roleOf(element) == "AXMenu", isUnlabeled(element) else { return false }
+  // Grouping menus (no/few direct links): flatten under both menu and menu-item parents.
+  // Codex keeps only leafy menus (AI问答…); section menus under 丁香医考 are flattened.
+  if !isLeafyMenu(element) {
+    return parentRole == "AXMenu" || parentRole == "AXMenuItem"
+  }
+  // Nested leafy menus inside an already-leafy menu (e.g. 医考crm) are flattened.
+  return parentRole == "AXMenuItem" && inLeafMenu
+}
+
+func chromeFingerprint(_ element: AXUIElement) -> String? {
+  let role = roleOf(element)
+  let ident = nodeIdentity(element)
+  let name = ident.name ?? ""
+  if chromeRoles.contains(role) {
+    return "\(role)|\(name)"
+  }
+  if ["标签页搜索", "新标签页", "打开 Chrome 中的 Gemini"].contains(name) {
+    return "\(role)|\(name)"
+  }
+  return nil
+}
+
+func dumpTree(
+  _ element: AXUIElement,
+  depth: Int,
   deadline: Date,
   budget: inout Int,
-  depth: Int = 0,
-  descend: Bool = true,
-  into lines: inout [(rank: Int, text: String)]
+  into lines: inout [String],
+  seenChrome: inout Set<String>,
+  seenElements: inout Set<AXID>,
+  parentRole: String = "",
+  inLeafMenu: Bool = false
 ) {
   if Date() > deadline || budget <= 0 { return }
-  if !descend {
-    _ = extractNode(element, windowFrame: windowFrame, browserChrome: browserChrome, depth: depth, into: &lines)
+  let role = roleOf(element)
+  if skipRoles.contains(role) { return }
+  if let roleDesc = stringAttribute(element, kAXRoleDescriptionAttribute as CFString),
+     skipRoleDescriptions.contains(roleDesc) {
     return
   }
-  var chromeBudget = min(budget, 1800)
-  walk(
-    roots: [element],
-    windowFrame: windowFrame,
-    browserChrome: browserChrome,
-    deadline: deadline,
-    budget: &chromeBudget,
-    maxDepth: 12,
-    children: structuralChildren,
-    into: &lines
-  )
-  budget -= (min(budget, 1800) - chromeBudget)
-  var bodyBudget = min(max(budget, 0), 1600)
-  walk(
-    roots: [element],
-    windowFrame: windowFrame,
-    browserChrome: browserChrome,
-    deadline: deadline,
-    budget: &bodyBudget,
-    maxDepth: 18,
-    children: contentChildren,
-    into: &lines
-  )
-  budget -= (min(max(budget, 0), 1600) - bodyBudget)
-}
-
-func cleanWindowText(_ rows: [(rank: Int, text: String)], windowName: String, owner: String) -> String {
-  var seen = Set<String>()
-  var kept: [String] = []
-  let skipExact = Set([windowName, owner, "\(windowName) - \(owner)", "\(owner) - \(windowName)"].filter { !$0.isEmpty })
-  for row in rows.sorted(by: { $0.rank < $1.rank }) {
-    for raw in row.text.split(separator: "\n", omittingEmptySubsequences: false) {
-      let line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-      if line.count < 2 { continue }
-      if skipExact.contains(line) { continue }
-      if hasShortcutChrome(line) { continue }
-      if isChromeTitle(line) { continue }
-      if isJunkLine(line) { continue }
-      if seen.contains(line) { continue }
-      seen.insert(line)
-      kept.append(line)
-      if kept.count >= 180 { return kept.joined(separator: "\n") }
+  if boolAttribute(element, kAXHiddenAttribute as CFString) { return }
+  if !seenElements.insert(AXID(element: element)).inserted { return }
+  if let key = chromeFingerprint(element), !seenChrome.insert(key).inserted { return }
+  let kids = expandedKids(element)
+  if isContainerRole(role), isUnlabeled(element), kids.isEmpty { return }
+  if shouldHoistMenu(element, parentRole: parentRole, inLeafMenu: inLeafMenu) {
+    for child in kids.prefix(400) {
+      dumpTree(
+        child,
+        depth: depth,
+        deadline: deadline,
+        budget: &budget,
+        into: &lines,
+        seenChrome: &seenChrome,
+        seenElements: &seenElements,
+        parentRole: parentRole,
+        inLeafMenu: inLeafMenu
+      )
     }
+    return
   }
-  return kept.joined(separator: "\n")
+  budget -= 1
+  let indent = String(repeating: "\t", count: depth)
+  lines.append(indent + nodeLine(element))
+  // Codex keeps URL-bearing web links collapsed; expand named 「链接」 (e.g. 复制code).
+  if role == "AXLink", linkHasURL(element) {
+    return
+  }
+  var index = 0
+  let limitedKids = Array(kids.prefix(400))
+  while index < limitedKids.count {
+    let child = limitedKids[index]
+    if shouldSkipDuplicateChild(element, child) {
+      index += 1
+      continue
+    }
+    if role == "AXTable" {
+      let childRole = roleOf(child)
+      if childRole == "AXColumnHeader" || childRole == "AXColumn" {
+        index += 1
+        continue
+      }
+      if isContainerRole(childRole), isUnlabeled(child), expandedKids(child).isEmpty {
+        index += 1
+        continue
+      }
+    }
+    if roleOf(child) == "AXStaticText",
+       let textName = nodeIdentity(child).name, !textName.isEmpty {
+      if index + 1 < limitedKids.count,
+         roleOf(limitedKids[index + 1]) == "AXStaticText",
+         nodeIdentity(limitedKids[index + 1]).name == ":" {
+        lines.append(String(repeating: "\t", count: depth + 1) + "text \(textName) :")
+        _ = seenElements.insert(AXID(element: limitedKids[index + 1]))
+        index += 2
+        continue
+      }
+      if index + 1 < limitedKids.count,
+         let md = markdownLink(limitedKids[index + 1]) {
+        lines.append(String(repeating: "\t", count: depth + 1) + "text \(textName) \(md)")
+        _ = seenElements.insert(AXID(element: limitedKids[index + 1]))
+        index += 2
+        continue
+      }
+    }
+    let siblingMenu = role == "AXMenuItem"
+      && roleOf(child) == "AXMenu"
+      && isUnlabeled(child)
+    dumpTree(
+      child,
+      depth: siblingMenu ? depth : depth + 1,
+      deadline: deadline,
+      budget: &budget,
+      into: &lines,
+      seenChrome: &seenChrome,
+      seenElements: &seenElements,
+      parentRole: role,
+      inLeafMenu: inLeafMenu || (role == "AXMenu" && isLeafyMenu(element))
+    )
+    index += 1
+  }
 }
 
 func windowRoot(app: AXUIElement, windowName: String) -> AXUIElement {
@@ -516,44 +641,60 @@ func windowRoot(app: AXUIElement, windowName: String) -> AXUIElement {
   return windows.first ?? app
 }
 
+func describeFocused(_ element: AXUIElement) -> String {
+  var parts = [nodeLine(element)]
+  if let url = urlAttribute(element) {
+    if !parts[0].contains("URL:") {
+      parts[0] += ", URL: \(url)"
+    }
+  }
+  return parts[0]
+}
+
+func focusedElement(from candidates: [AXUIElement]) -> AXUIElement? {
+  for candidate in candidates {
+    var focusedRef: CFTypeRef?
+    if AXUIElementCopyAttributeValue(candidate, kAXFocusedUIElementAttribute as CFString, &focusedRef) == .success,
+       let focusedRef,
+       CFGetTypeID(focusedRef) == AXUIElementGetTypeID() {
+      let focusedElement = focusedRef as! AXUIElement
+      let focusedRole = roleOf(focusedElement)
+      if focusedRole != "AXWindow", focusedRole != "AXApplication", !focusedRole.isEmpty {
+        return focusedElement
+      }
+    }
+  }
+  return nil
+}
+
 func windowText(pid: pid_t, owner: String, windowName: String, maxChars: Int) -> (text: String, truncated: Bool, trusted: Bool) {
+  _ = owner
   let trusted = AXIsProcessTrusted()
   guard trusted else { return ("", false, false) }
   let app = AXUIElementCreateApplication(pid)
   let root = windowRoot(app: app, windowName: windowName)
-  var rows: [(rank: Int, text: String)] = []
-  let deadline = Date().addingTimeInterval(2.8)
-  var focusedRef: CFTypeRef?
-  if AXUIElementCopyAttributeValue(root, kAXFocusedUIElementAttribute as CFString, &focusedRef) == .success,
-     let focusedRef,
-     CFGetTypeID(focusedRef) == AXUIElementGetTypeID() {
-    let focusedElement = focusedRef as! AXUIElement
-    let focusedRole = roleOf(focusedElement)
-    if focusedRole != "AXWindow", focusedRole != "AXApplication" {
-      var focusBudget = 120
-      collectText(
-        from: focusedElement,
-        windowFrame: nil,
-        browserChrome: false,
-        deadline: deadline,
-        budget: &focusBudget,
-        depth: 0,
-        descend: false,
-        into: &rows
-      )
-    }
-  }
-  var budget = 4500
-  collectText(
-    from: root,
-    windowFrame: isBrowserOwner(owner) ? elementFrame(root) : nil,
-    browserChrome: isBrowserOwner(owner),
+  var lines: [String] = []
+  let deadline = Date().addingTimeInterval(6.0)
+  var budget = 25000
+  var seenChrome = Set<String>()
+  var seenElements = Set<AXID>()
+  dumpTree(
+    root,
+    depth: 0,
     deadline: deadline,
     budget: &budget,
-    depth: 0,
-    into: &rows
+    into: &lines,
+    seenChrome: &seenChrome,
+    seenElements: &seenElements
   )
-  let text = cleanWindowText(rows, windowName: windowName, owner: owner)
+  var focusedLabel = ""
+  if let focused = focusedElement(from: [root, app]) {
+    focusedLabel = describeFocused(focused)
+  }
+  var text = lines.joined(separator: "\n")
+  if !focusedLabel.isEmpty {
+    text += "\n\nThe focused UI element is \(focusedLabel)"
+  }
   if text.count > maxChars {
     let end = text.index(text.startIndex, offsetBy: maxChars)
     return (String(text[..<end]), true, true)
@@ -706,7 +847,7 @@ func hasFlag(_ name: String) -> Bool {
 
 let command = CommandLine.arguments.dropFirst().first ?? "front"
 let skipSelf = !hasFlag("--include-self")
-let maxChars = Int(argValue("--max-chars") ?? "12000") ?? 12_000
+let maxChars = Int(argValue("--max-chars") ?? "80000") ?? 80_000
 
 switch command {
 case "front":

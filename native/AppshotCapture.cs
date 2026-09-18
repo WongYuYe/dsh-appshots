@@ -6,7 +6,6 @@ using System.Drawing.Imaging;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
-using System.Text.RegularExpressions;
 using System.Windows.Automation;
 using System.Windows.Forms;
 
@@ -389,138 +388,244 @@ internal static class Program
         }
     }
 
-    static readonly HashSet<string> ChromeNoise = new HashSet<string>(StringComparer.Ordinal)
+    static readonly Dictionary<ControlType, string> RoleLabels = new Dictionary<ControlType, string>
     {
-        "Skip to content", "Navigation Menu", "Homepage", "Global", "Platform", "Solutions",
-        "Resources", "Open Source", "Enterprise", "Pricing", "Sign in", "Sign up",
-        "Appearance settings", "自定义 Chrome", "返回", "前进", "重新加载", "查看网站信息",
-        "为此标签页添加书签", "扩展程序", "书签", "标签页搜索", "新标签页", "关闭", "翻译",
-        "Accessibility help", "Search", "Share", "Google apps", "AI Mode", "All",
-        "Images", "Videos", "Shopping", "News", "More", "Tools", "Help", "Privacy", "Terms",
+        { ControlType.Window, "标准窗口" },
+        { ControlType.Pane, "container" },
+        { ControlType.Group, "container" },
+        { ControlType.Document, "HTML 内容" },
+        { ControlType.Button, "按钮" },
+        { ControlType.Hyperlink, "link" },
+        { ControlType.Text, "文本" },
+        { ControlType.List, "内容列表" },
+        { ControlType.Header, "标题" },
+        { ControlType.ToolBar, "工具栏" },
+        { ControlType.Menu, "菜单" },
+        { ControlType.ComboBox, "组合框" },
+        { ControlType.Edit, "文本栏" },
+        { ControlType.CheckBox, "复选框" },
+        { ControlType.RadioButton, "标签" },
+        { ControlType.Tab, "标签" },
+        { ControlType.TabItem, "标签" },
+        { ControlType.Separator, "分离器" },
+        { ControlType.Image, "图像" },
+        { ControlType.SplitButton, "弹出式按钮" },
+        { ControlType.DataItem, "row" },
+        { ControlType.Tree, "外框" },
+        { ControlType.TreeItem, "row" },
+        { ControlType.Slider, "滑块" },
+        { ControlType.DataGrid, "表格" },
+        { ControlType.Table, "表格" },
+        { ControlType.HeaderItem, "列标题" },
+        { ControlType.Custom, "container" },
+        { ControlType.MenuItem, "" },
     };
 
-    sealed class RankedLine
+    static readonly HashSet<ControlType> SkipTypes = new HashSet<ControlType>
     {
-        public int Rank;
-        public string Text;
-        public RankedLine(int rank, string text)
-        {
-            Rank = rank;
-            Text = text;
-        }
-    }
+        ControlType.MenuBar, ControlType.TitleBar,
+    };
+
+    static readonly HashSet<ControlType> ChromeTypes = new HashSet<ControlType>
+    {
+        ControlType.ToolBar, ControlType.Tab,
+    };
 
     static void WindowText(IntPtr hwnd, int maxChars, out string text, out bool truncated)
     {
-        List<RankedLine> rows = new List<RankedLine>();
-        DateTime deadline = DateTime.UtcNow.AddMilliseconds(1800);
-        int budget = 2200;
+        List<string> lines = new List<string>();
+        DateTime deadline = DateTime.UtcNow.AddMilliseconds(3500);
+        int budget = 8000;
         string owner, title;
         uint pid;
         Describe(hwnd, out owner, out title, out pid);
-        double wl = 0, wt = 0, wr = 0, wb = 0;
-        bool hasWindowRect = false;
+        _ = owner;
+        string focused = "";
         try
         {
             AutomationElement root = AutomationElement.FromHandle(hwnd);
             if (root != null)
             {
+                HashSet<string> seenChrome = new HashSet<string>();
+                DumpTree(root, 0, deadline, ref budget, lines, seenChrome);
                 try
                 {
-                    System.Windows.Rect bounds = root.Current.BoundingRectangle;
-                    if (!bounds.IsEmpty)
+                    AutomationElement focusedEl = root.Current.HasKeyboardFocus
+                        ? root
+                        : root.FindFirst(TreeScope.Descendants, new PropertyCondition(AutomationElement.HasKeyboardFocusProperty, true));
+                    if (focusedEl != null)
                     {
-                        wl = bounds.Left; wt = bounds.Top; wr = bounds.Right; wb = bounds.Bottom;
-                        hasWindowRect = true;
+                        ControlType type = null;
+                        try { type = focusedEl.Current.ControlType; } catch { }
+                        if (type != ControlType.Window)
+                        {
+                            focused = NodeLine(focusedEl);
+                        }
                     }
                 }
                 catch { }
-                CollectText(root, wl, wt, wr, wb, hasWindowRect, IsBrowserOwner(owner), deadline, ref budget, 0, rows);
             }
         }
         catch
         {
         }
-        string cleaned = CleanWindowText(rows, title, owner);
+        string cleaned = string.Join("\n", lines.ToArray());
         if (string.IsNullOrWhiteSpace(cleaned) && !string.IsNullOrWhiteSpace(title)) cleaned = title.Trim();
+        if (!string.IsNullOrWhiteSpace(focused))
+        {
+            cleaned += "\n\nThe focused UI element is " + focused;
+        }
         truncated = cleaned.Length > maxChars;
         text = truncated ? cleaned.Substring(0, maxChars) : cleaned;
     }
 
-    static bool IsBrowserOwner(string owner)
+    static string CompactURL(string raw)
     {
-        return owner == "Google Chrome" || owner == "Microsoft Edge" || owner == "Chromium"
-            || owner == "Brave" || owner == "Vivaldi" || owner == "Arc";
-    }
-
-    static bool IsPrivateUse(char ch)
-    {
-        int value = ch;
-        return (value >= 0xE000 && value <= 0xF8FF);
-    }
-
-    static bool IsIconHeavy(string line)
-    {
-        if (line.Length <= 2)
+        string value = (raw ?? "").Trim();
+        string folded = value.ToLowerInvariant();
+        string[] prefixes = { "https://www.", "http://www.", "https://", "http://" };
+        foreach (string prefix in prefixes)
         {
-            bool allIcons = true;
-            foreach (char ch in line)
+            if (folded.StartsWith(prefix, StringComparison.Ordinal))
             {
-                if (!char.IsSurrogate(ch) && !IsPrivateUse(ch)) { allIcons = false; break; }
+                return value.Substring(prefix.Length);
             }
-            if (allIcons) return true;
         }
-        int icons = 0;
-        foreach (char ch in line) if (IsPrivateUse(ch)) icons++;
-        return icons * 2 >= line.Length;
+        return value;
     }
 
-    static bool IsLowValue(string line)
+    static bool LinkHasURL(AutomationElement element)
     {
-        string folded = line.Trim().ToLowerInvariant();
-        if (folded == "on" || folded == "off" || folded == "true" || folded == "false" || folded == "yes" || folded == "no") return true;
-        if (folded == "0" || folded == "1") return true;
+        try
+        {
+            object pattern;
+            if (element.TryGetCurrentPattern(ValuePattern.Pattern, out pattern))
+            {
+                string value = ((ValuePattern)pattern).Current.Value;
+                if (!string.IsNullOrWhiteSpace(value))
+                {
+                    string lower = value.ToLowerInvariant();
+                    if (lower.StartsWith("http://") || lower.StartsWith("https://") || lower.StartsWith("chrome://"))
+                    {
+                        return true;
+                    }
+                    if (value.Contains("/") || value.Contains(".")) return true;
+                }
+            }
+        }
+        catch { }
         return false;
     }
 
-    static bool ShouldSkipChromeNoise(string line)
+    static string RoleDescription(AutomationElement element, ControlType type)
     {
-        if (ChromeNoise.Contains(line)) return true;
-        if (line.StartsWith("关闭", StringComparison.Ordinal)) return true;
-        if (line.Contains("内存用量")) return true;
-        if (line.Contains("闲置标签页")) return true;
-        return false;
+        if (type == ControlType.Hyperlink)
+        {
+            // Codex: URL-bearing web links → "link"; named in-page links → "链接".
+            return LinkHasURL(element) ? "link" : "链接";
+        }
+        if (type == ControlType.Separator)
+        {
+            string name = null;
+            try { name = element.Current.Name; } catch { }
+            if (!string.IsNullOrWhiteSpace(name)) return "分离器";
+            return "container";
+        }
+        if (type != null && RoleLabels.ContainsKey(type)) return RoleLabels[type];
+        try
+        {
+            string localized = element.Current.LocalizedControlType;
+            if (!string.IsNullOrWhiteSpace(localized)) return localized;
+        }
+        catch { }
+        return type == null ? "container" : type.LocalizedControlType;
     }
 
-    static bool IsStaleFindWidget(string line)
+    static string ChromeFingerprint(AutomationElement element, ControlType type)
     {
-        return Regex.IsMatch(line, @"\d+\s+of\s+\d+\s+found") || line.Contains(" found for '");
+        string name = null;
+        try { name = element.Current.Name; } catch { }
+        if (name != null) name = name.Trim();
+        else name = "";
+        if (type != null && ChromeTypes.Contains(type))
+        {
+            return type.ProgrammaticName + "|" + name;
+        }
+        if (name == "标签页搜索" || name == "新标签页" || name == "打开 Chrome 中的 Gemini")
+        {
+            return (type == null ? "control" : type.ProgrammaticName) + "|" + name;
+        }
+        return null;
     }
 
-    static bool IsJunkLine(string line)
+    static string NodeLine(AutomationElement element)
     {
-        if (ShouldSkipChromeNoise(line)) return true;
-        if (IsStaleFindWidget(line)) return true;
-        if (IsIconHeavy(line)) return true;
-        if (line.Contains("command:")) return true;
-        if (line.Contains("gitlens.")) return true;
-        if (line.Contains("$(")) return true;
-        if (line.Contains("utm_source=")) return true;
-        if (line.ToLowerInvariant().Contains("screen reader")) return true;
-        if (line.Contains("YesNoLearn More") || line == "Learn More") return true;
-        if (line.StartsWith("Open in Agents", StringComparison.Ordinal)) return true;
-        if (line.Length > 280) return true;
-        return false;
-    }
+        ControlType type = null;
+        try { type = element.Current.ControlType; } catch { }
+        string roleDesc = RoleDescription(element, type);
+        string name = null;
+        try { name = element.Current.Name; } catch { }
+        if (!string.IsNullOrWhiteSpace(name)) name = name.Trim();
+        else name = null;
+        string help = null;
+        try { help = element.Current.HelpText; } catch { }
+        if (!string.IsNullOrWhiteSpace(help)) help = help.Trim();
+        else help = null;
+        string value = null;
+        try
+        {
+            object pattern;
+            if (element.TryGetCurrentPattern(ValuePattern.Pattern, out pattern))
+            {
+                value = ((ValuePattern)pattern).Current.Value;
+            }
+        }
+        catch { }
+        if (!string.IsNullOrWhiteSpace(value)) value = value.Trim();
+        else value = null;
 
-    static bool IntersectsWindow(double wl, double wt, double wr, double wb, bool hasWindowRect, System.Windows.Rect frame)
-    {
-        if (!hasWindowRect || frame.IsEmpty) return true;
-        double l = Math.Max(wl, frame.Left);
-        double t = Math.Max(wt, frame.Top);
-        double r = Math.Min(wr, frame.Right);
-        double b = Math.Min(wb, frame.Bottom);
-        return (r - l) >= 2 && (b - t) >= 2;
+        List<string> states = new List<string>();
+        try
+        {
+            object selection;
+            if (element.TryGetCurrentPattern(SelectionItemPattern.Pattern, out selection)
+                && ((SelectionItemPattern)selection).Current.IsSelected)
+            {
+                states.Add("selected");
+            }
+        }
+        catch { }
+        bool settable = false;
+        try
+        {
+            object pattern;
+            if (element.TryGetCurrentPattern(ValuePattern.Pattern, out pattern))
+            {
+                settable = !((ValuePattern)pattern).Current.IsReadOnly;
+            }
+        }
+        catch { }
+        if (settable) states.Add("settable");
+        bool booleanLike = type == ControlType.CheckBox || type == ControlType.RadioButton || type == ControlType.TabItem
+            || value == "on" || value == "off" || value == "0" || value == "1" || value == "true" || value == "false";
+        if (settable && booleanLike) states.Add("boolean");
+
+        string head = roleDesc ?? "";
+        if (states.Count > 0) head += " (" + string.Join(", ", states.ToArray()) + ")";
+        if (name != null) head += string.IsNullOrEmpty(head) ? name : " " + name;
+
+        List<string> extras = new List<string>();
+        if (value != null && value != name && value.Length <= 500)
+        {
+            extras.Add("Value: " + CompactURL(value));
+        }
+        if (help != null && help != name)
+        {
+            extras.Add("Help: " + help);
+        }
+        if (extras.Count == 0) return head;
+        if (name == null) return (head + " " + string.Join(", ", extras.ToArray())).Trim();
+        return head + ", " + string.Join(", ", extras.ToArray());
     }
 
     static List<AutomationElement> ChildrenOf(AutomationElement element)
@@ -530,7 +635,8 @@ internal static class Program
         {
             AutomationElement child = TreeWalker.ControlViewWalker.GetFirstChild(element);
             int count = 0;
-            while (child != null && count < 80)
+            int cap = 200;
+            while (child != null && count < cap)
             {
                 children.Add(child);
                 child = TreeWalker.ControlViewWalker.GetNextSibling(child);
@@ -541,139 +647,124 @@ internal static class Program
         return children;
     }
 
-    static bool ExtractNode(AutomationElement element, double wl, double wt, double wr, double wb, bool hasWindowRect, bool browserChrome, int depth, List<RankedLine> rows)
+    static bool IsUnlabeled(AutomationElement element)
     {
-        try
-        {
-            ControlType type = null;
-            try { type = element.Current.ControlType; } catch { }
-            if (type == ControlType.MenuBar || type == ControlType.Menu || type == ControlType.MenuItem || type == ControlType.Separator || type == ControlType.Image)
-            {
-                return false;
-            }
-            if (browserChrome && (type == ControlType.Tab || type == ControlType.ToolBar)) return false;
-            bool visible = true;
-            try
-            {
-                if (element.Current.IsOffscreen) visible = false;
-                else
-                {
-                    System.Windows.Rect frame = element.Current.BoundingRectangle;
-                    if (frame.Width >= 4 && frame.Height >= 4 && !IntersectsWindow(wl, wt, wr, wb, hasWindowRect, frame)) visible = false;
-                }
-            }
-            catch { }
-            if (!visible) return true;
-
-            try
-            {
-                object textPattern;
-                if (element.TryGetCurrentPattern(TextPattern.Pattern, out textPattern))
-                {
-                    TextPatternRange[] selected = ((TextPattern)textPattern).GetSelection();
-                    if (selected != null && selected.Length > 0)
-                    {
-                        string selectedText = selected[0].GetText(800);
-                        if (!string.IsNullOrWhiteSpace(selectedText) && selectedText.Trim().Length >= 2 && !IsJunkLine(selectedText.Trim()))
-                        {
-                            rows.Add(new RankedLine(0, "Selected: " + selectedText.Trim()));
-                        }
-                    }
-                }
-            }
-            catch { }
-
-            string value = null;
-            try
-            {
-                object pattern;
-                if (element.TryGetCurrentPattern(ValuePattern.Pattern, out pattern))
-                {
-                    value = ((ValuePattern)pattern).Current.Value;
-                }
-                else if (!browserChrome && element.TryGetCurrentPattern(TextPattern.Pattern, out pattern))
-                {
-                    value = ((TextPattern)pattern).DocumentRange.GetText(4000);
-                }
-            }
-            catch { }
-
-            bool editable = type == ControlType.Edit || type == ControlType.ComboBox || type == ControlType.Document;
-            if (!string.IsNullOrWhiteSpace(value) && !IsLowValue(value.Trim()) && !IsJunkLine(value.Trim()))
-            {
-                if (editable || value.Trim().Length >= 6) rows.Add(new RankedLine(editable ? 1 : 2, value.Trim()));
-            }
-            string name = null;
-            try { name = element.Current.Name; } catch { }
-            if (!string.IsNullOrWhiteSpace(name) && name.Trim().Length >= 4 && !IsJunkLine(name.Trim()))
-            {
-                bool buttonLike = type == ControlType.Button || type == ControlType.SplitButton || type == ControlType.CheckBox || type == ControlType.RadioButton;
-                if (!buttonLike || name.Trim().Contains(" ") || name.Trim().Length >= 10)
-                {
-                    rows.Add(new RankedLine(buttonLike ? 4 : 3, name.Trim()));
-                }
-            }
-            return true;
-        }
-        catch
-        {
-            return true;
-        }
+        string name = null;
+        try { name = element.Current.Name; } catch { }
+        string help = null;
+        try { help = element.Current.HelpText; } catch { }
+        return string.IsNullOrWhiteSpace(name) && string.IsNullOrWhiteSpace(help);
     }
 
-    static void CollectText(AutomationElement element, double wl, double wt, double wr, double wb, bool hasWindowRect, bool browserChrome, DateTime deadline, ref int budget, int depth, List<RankedLine> rows)
+    static bool IsUnlabeledWrapper(AutomationElement element, ControlType type)
+    {
+        _ = element;
+        _ = type;
+        return false;
+    }
+
+    static bool MenuItemHasSubmenu(AutomationElement item)
+    {
+        foreach (AutomationElement child in ChildrenOf(item))
+        {
+            ControlType childType = null;
+            try { childType = child.Current.ControlType; } catch { }
+            if (childType == ControlType.Menu) return true;
+        }
+        return false;
+    }
+
+    static bool ItemHasDirectLink(AutomationElement item)
+    {
+        foreach (AutomationElement child in ChildrenOf(item))
+        {
+            ControlType childType = null;
+            try { childType = child.Current.ControlType; } catch { }
+            if (childType == ControlType.Menu) continue;
+            if (childType == ControlType.Hyperlink) return true;
+            if ((childType == ControlType.Pane || childType == ControlType.Group || childType == ControlType.Custom)
+                && IsUnlabeled(child) && ItemHasDirectLink(child))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static bool IsLeafyMenu(AutomationElement menu)
+    {
+        int items = 0;
+        int linked = 0;
+        foreach (AutomationElement child in ChildrenOf(menu))
+        {
+            ControlType childType = null;
+            try { childType = child.Current.ControlType; } catch { }
+            if (childType != ControlType.MenuItem) continue;
+            items++;
+            if (ItemHasDirectLink(child)) linked++;
+        }
+        if (items == 0) return false;
+        return linked >= 1 && linked * 2 >= items;
+    }
+
+    static bool ShouldHoistMenu(AutomationElement element, ControlType type, ControlType parentType, bool inLeafMenu)
+    {
+        if (type != ControlType.Menu || !IsUnlabeled(element)) return false;
+        if (!IsLeafyMenu(element))
+        {
+            return parentType == ControlType.Menu || parentType == ControlType.MenuItem;
+        }
+        return parentType == ControlType.MenuItem && inLeafMenu;
+    }
+
+    static void DumpTree(AutomationElement element, int depth, DateTime deadline, ref int budget, List<string> lines, HashSet<string> seenChrome)
+    {
+        DumpTree(element, depth, deadline, ref budget, lines, seenChrome, null, false);
+    }
+
+    static void DumpTree(AutomationElement element, int depth, DateTime deadline, ref int budget, List<string> lines, HashSet<string> seenChrome, ControlType parentType, bool inLeafMenu)
     {
         if (DateTime.UtcNow > deadline || budget <= 0 || element == null) return;
-        budget -= 1;
-        if (!ExtractNode(element, wl, wt, wr, wb, hasWindowRect, browserChrome, depth, rows)) return;
-        Queue<KeyValuePair<AutomationElement, int>> queue = new Queue<KeyValuePair<AutomationElement, int>>();
-        foreach (AutomationElement child in ChildrenOf(element))
+        ControlType type = null;
+        try { type = element.Current.ControlType; } catch { }
+        if (type != null && SkipTypes.Contains(type)) return;
+        List<AutomationElement> kids = ChildrenOf(element);
+        string chromeKey = ChromeFingerprint(element, type);
+        if (chromeKey != null && !seenChrome.Add(chromeKey)) return;
+        if ((type == ControlType.Pane || type == ControlType.Group || type == ControlType.Custom)
+            && IsUnlabeled(element) && kids.Count == 0)
         {
-            queue.Enqueue(new KeyValuePair<AutomationElement, int>(child, depth + 1));
+            return;
         }
-        while (queue.Count > 0 && budget > 0 && DateTime.UtcNow <= deadline)
+        if (IsUnlabeledWrapper(element, type) || ShouldHoistMenu(element, type, parentType, inLeafMenu))
         {
-            KeyValuePair<AutomationElement, int> current = queue.Dequeue();
-            if (current.Value > 24) continue;
-            budget -= 1;
-            if (!ExtractNode(current.Key, wl, wt, wr, wb, hasWindowRect, browserChrome, current.Value, rows)) continue;
-            ControlType currentType = null;
-            try { currentType = current.Key.Current.ControlType; } catch { }
-            if (currentType == ControlType.Button || currentType == ControlType.SplitButton
-                || currentType == ControlType.CheckBox || currentType == ControlType.RadioButton)
+            foreach (AutomationElement child in kids)
+            {
+                DumpTree(child, depth, deadline, ref budget, lines, seenChrome, parentType, inLeafMenu);
+            }
+            return;
+        }
+        budget -= 1;
+        lines.Add(new string('\t', depth) + NodeLine(element));
+        // Collapse URL-bearing web links; expand named 「链接」 (e.g. 复制code).
+        if (type == ControlType.Hyperlink && LinkHasURL(element)) return;
+        bool nextInLeafMenu = inLeafMenu || (type == ControlType.Menu && IsLeafyMenu(element));
+        foreach (AutomationElement child in kids)
+        {
+            ControlType childType = null;
+            try { childType = child.Current.ControlType; } catch { }
+            if ((type == ControlType.DataGrid || type == ControlType.Table)
+                && (childType == ControlType.HeaderItem
+                    || ((childType == ControlType.Pane || childType == ControlType.Group || childType == ControlType.Custom)
+                        && IsUnlabeled(child) && ChildrenOf(child).Count == 0)))
             {
                 continue;
             }
-            foreach (AutomationElement child in ChildrenOf(current.Key))
-            {
-                queue.Enqueue(new KeyValuePair<AutomationElement, int>(child, current.Value + 1));
-            }
+            bool siblingMenu = type == ControlType.MenuItem
+                && childType == ControlType.Menu
+                && IsUnlabeled(child);
+            DumpTree(child, siblingMenu ? depth : depth + 1, deadline, ref budget, lines, seenChrome, type, nextInLeafMenu);
         }
-    }
-
-    static string CleanWindowText(List<RankedLine> rows, string windowName, string owner)
-    {
-        HashSet<string> skipExact = new HashSet<string>(StringComparer.Ordinal);
-        if (!string.IsNullOrWhiteSpace(windowName)) skipExact.Add(windowName.Trim());
-        if (!string.IsNullOrWhiteSpace(owner)) skipExact.Add(owner.Trim());
-        HashSet<string> seen = new HashSet<string>(StringComparer.Ordinal);
-        List<string> kept = new List<string>();
-        rows.Sort(delegate(RankedLine a, RankedLine b) { return a.Rank.CompareTo(b.Rank); });
-        foreach (RankedLine row in rows)
-        {
-            string[] parts = Regex.Split(row.Text ?? "", @"\r\n|\n|\r");
-            foreach (string raw in parts)
-            {
-                string line = raw.Trim();
-                if (line.Length < 2) continue;
-                if (skipExact.Contains(line)) continue;
-                if (IsJunkLine(line)) continue;
-                if (!seen.Add(line)) continue;
-                kept.Add(line);
-                if (kept.Count >= 180) return string.Join("\n", kept.ToArray());
-            }
-        }
-        return string.Join("\n", kept.ToArray());
     }
 
     static void ActivateDshDesktop()
