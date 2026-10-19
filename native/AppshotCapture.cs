@@ -194,7 +194,9 @@ internal static class Program
     static void Capture(bool skipSelf, int maxChars, string outPath)
     {
         var front = FrontPayload(skipSelf, maxChars);
-        if (!(front.ContainsKey("ok") && front["ok"] is bool ok && ok))
+        object okValue;
+        front.TryGetValue("ok", out okValue);
+        if (!(okValue is bool && (bool)okValue))
         {
             Emit(front);
             Environment.Exit(1);
@@ -439,7 +441,6 @@ internal static class Program
         string owner, title;
         uint pid;
         Describe(hwnd, out owner, out title, out pid);
-        _ = owner;
         string focused = "";
         try
         {
@@ -658,8 +659,6 @@ internal static class Program
 
     static bool IsUnlabeledWrapper(AutomationElement element, ControlType type)
     {
-        _ = element;
-        _ = type;
         return false;
     }
 
@@ -789,8 +788,9 @@ internal static class Program
         if (Native.IsIconic(hwnd)) Native.ShowWindow(hwnd, Native.SW_RESTORE);
         IntPtr foreground = Native.GetForegroundWindow();
         uint thisThread = Native.GetCurrentThreadId();
-        uint targetThread = Native.GetWindowThreadProcessId(hwnd, out _);
-        uint foregroundThread = Native.GetWindowThreadProcessId(foreground, out _);
+        uint ignoredPid;
+        uint targetThread = Native.GetWindowThreadProcessId(hwnd, out ignoredPid);
+        uint foregroundThread = Native.GetWindowThreadProcessId(foreground, out ignoredPid);
         Native.AttachThreadInput(thisThread, foregroundThread, true);
         Native.AttachThreadInput(targetThread, foregroundThread, true);
         Native.keybd_event(Native.VK_MENU, 0, 0, UIntPtr.Zero);
